@@ -438,12 +438,15 @@ func installCrontab(exePath, absDir string) error {
 	return nil
 }
 
+var Version = "dev"
+
 func main() {
 	detectLanguage()
 
 	var rootCmd = &cobra.Command{
-		Use:   "pg_wal_cleaner",
-		Short: T("desc_root"),
+		Use:     "pg_wal_cleaner",
+		Short:   T("desc_root"),
+		Version: Version,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if optLang != "" {
 				currentLang = optLang

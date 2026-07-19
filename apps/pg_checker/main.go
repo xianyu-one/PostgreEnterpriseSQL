@@ -23,11 +23,14 @@ type PgInstance struct {
 	Command string
 }
 
+var Version = "dev"
+
 var rootCmd = &cobra.Command{
-	Use:   "pg_checker",
-	Short: "pg_checker is a tool to find running PostgreSQL instances",
+	Use:     "pg_checker",
+	Short:   "pg_checker is a tool to find running PostgreSQL instances",
 	Long: `pg_checker scans the system processes to detect running PostgreSQL server instances.
 It attempts to extract the port and data directory from the process command line.`,
+	Version: Version,
 	Run: func(cmd *cobra.Command, args []string) {
 		runChecker()
 	},

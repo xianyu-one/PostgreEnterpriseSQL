@@ -8,7 +8,23 @@ set -euo pipefail
 APPS_DIR="${1:-./apps}"
 OUTPUT_DIR="${2:-./output}"
 
+# Extract version from environment variable or git
+if [ -n "${PESQL_VERSION:-}" ]; then
+    VERSION="${PESQL_VERSION}"
+elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    TAG=$(git describe --tags --exact-match 2>/dev/null || true)
+    if [ -n "$TAG" ]; then
+        VERSION="$TAG"
+    else
+        SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
+        VERSION="snapshot-${SHA}"
+    fi
+else
+    VERSION="unknown"
+fi
+
 echo "Scanning ${APPS_DIR} for Go tools..."
+echo "Building Go tools with version: ${VERSION}"
 
 # Ensure output directories exist
 mkdir -p "${OUTPUT_DIR}/bin"
@@ -42,15 +58,22 @@ for item in "${APPS_DIR}"/*; do
         pushd "${item}" > /dev/null
         echo "  Compiling ${app_name}..."
         
+        # Determine the ldflags version variable path based on app name
+        if [ "${app_name}" = "pg_mgr" ]; then
+            ldflags="-s -w -X pg_mgr/cmd.Version=${VERSION}"
+        else
+            ldflags="-s -w -X main.Version=${VERSION}"
+        fi
+
         # Build with optimizations disabled for size (ldflags -s -w) and static linking (CGO_ENABLED=0)
         if [ -f "go.mod" ]; then
-            CGO_ENABLED=0 go build -ldflags="-s -w" -o "${target_bin_dir}/${app_name}" .
+            CGO_ENABLED=0 go build -ldflags="${ldflags}" -o "${target_bin_dir}/${app_name}" .
         else
             # Fallback for projects without a go.mod file
             if [ -f "main.go" ]; then
-                CGO_ENABLED=0 GO111MODULE=auto go build -ldflags="-s -w" -o "${target_bin_dir}/${app_name}" main.go
+                CGO_ENABLED=0 GO111MODULE=auto go build -ldflags="${ldflags}" -o "${target_bin_dir}/${app_name}" main.go
             else
-                CGO_ENABLED=0 GO111MODULE=auto go build -ldflags="-s -w" -o "${target_bin_dir}/${app_name}" *.go
+                CGO_ENABLED=0 GO111MODULE=auto go build -ldflags="${ldflags}" -o "${target_bin_dir}/${app_name}" *.go
             fi
         fi
 

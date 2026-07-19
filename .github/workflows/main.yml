@@ -54,6 +54,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU for multi-platform builds
         uses: docker/setup-qemu-action@v3
@@ -109,9 +111,21 @@ jobs:
             ARCH_FOR_FILENAME="x64"
           fi
           
+          # Determine PESQL version
+          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            PESQL_VER=$(git describe --tags --exact-match 2>/dev/null || true)
+            if [ -z "$PESQL_VER" ]; then
+              SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
+              PESQL_VER="snapshot-${SHA}"
+            fi
+          else
+            PESQL_VER="unknown"
+          fi
+          echo "pesql_version=${PESQL_VER}" >> $GITHUB_OUTPUT
+          
           # 构造最终的归档文件名
-          # 结果示例: postgresql-16.9-x64-RockyLinux8.tar.gz
-          ARCHIVE_NAME="postgresql-${PG_VERSION}-${ARCH_FOR_FILENAME}-${OS_ID}.tar.gz"
+          # 结果示例: postgresql-16.9-x64-RockyLinux9-PESQL-vx.x.x.tar.gz
+          ARCHIVE_NAME="postgresql-${PG_VERSION}-${ARCH_FOR_FILENAME}-${OS_ID}-PESQL-${PESQL_VER}.tar.gz"
           echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
           
           # 构造 pg_rman 的分支名
@@ -126,6 +140,7 @@ jobs:
           echo "Platform: ${PLATFORM}"
           echo "Archive Name: ${ARCHIVE_NAME}"
           echo "pg_rman Branch: ${PGRMAN_BRANCH}"
+          echo "PESQL Version: ${PESQL_VER}"
 
       - name: Manage Release Notes and Determine Latest
         id: release_manager
@@ -133,19 +148,19 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const tag = `v${{ github.event.inputs.pg_version }}`;
+            const tag = `PostgreSQL ${{ github.event.inputs.pg_version }}`;
             const os = "${{ github.event.inputs.os_identifier }}";
             const arch = "${{ github.event.inputs.arch }}";
             const pgVersion = "${{ github.event.inputs.pg_version }}";
             const pgbackrestVersion = "${{ github.event.inputs.pgbackrest_version }}";
             const repmgrVersion = "${{ github.event.inputs.repmgr_version }}";
             const pgrmanBranch = "${{ steps.prep.outputs.pgrman_branch }}";
+            const pesqlVersion = "${{ steps.prep.outputs.pesql_version }}";
 
-            const goTools = "`pg_archiver`, `pg_checker`, `pg_wal_cleaner`, `pg_mgr`";
             const backupScripts = "`pgbackrest_backup.sh`, `pgrman_backup.sh`";
 
             const rowIdentifier = `| **${os} (${arch})** |`;
-            const newRow = `| **${os} (${arch})** | \`${pgVersion}\` | \`${pgbackrestVersion}\` | \`${repmgrVersion}\` | \`${pgrmanBranch}\` | ${goTools} | ${backupScripts} |`;
+            const newRow = `| **${os} (${arch})** | \`${pgVersion}\` | \`${pgbackrestVersion}\` | \`${repmgrVersion}\` | \`${pgrmanBranch}\` | \`${pesqlVersion}\` | ${backupScripts} |`;
 
             let currentBody = "";
             let releaseId = null;
@@ -205,7 +220,7 @@ jobs:
                 }
                 lines.push(header);
                 lines.push("");
-                lines.push("| OS (Arch) | PostgreSQL | pgBackRest | repmgr | pg_rman | Go Tools | Backup Scripts |");
+                lines.push("| OS (Arch) | PostgreSQL | pgBackRest | repmgr | pg_rman | PESQL version | Backup Scripts |");
                 lines.push("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
                 lines.push(newRow);
               }
@@ -234,7 +249,7 @@ jobs:
 
             try {
               const { data: latestRelease } = await github.rest.repos.getLatestRelease({ owner, repo });
-              const currentLatestVersion = latestRelease.tag_name.replace(/^v/, '');
+              const currentLatestVersion = latestRelease.tag_name.replace(/^(PostgreSQL\s+|v)/i, '');
               
               makeLatest = 'false';
               
@@ -283,6 +298,7 @@ jobs:
             ARCHIVE_NAME=${{ steps.prep.outputs.archive_name }}
             REPMGR_VERSION=${{ github.event.inputs.repmgr_version }}
             USE_CHINA_MIRROR=${{ github.event.inputs.use_china_mirror }}
+            PESQL_VERSION=${{ steps.prep.outputs.pesql_version }}
           outputs: type=local,dest=./output
 
       - name: Upload Artifact to Release
@@ -290,7 +306,7 @@ jobs:
         with:
           files: ./output/${{ steps.prep.outputs.archive_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: v${{ github.event.inputs.pg_version }}
+          tag_name: PostgreSQL ${{ github.event.inputs.pg_version }}
           name: PostgreSQL ${{ github.event.inputs.pg_version }}
           body: ${{ steps.release_manager.outputs.body }}
           make_latest: ${{ steps.release_manager.outputs.make_latest }}

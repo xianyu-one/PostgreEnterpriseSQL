@@ -12,6 +12,7 @@ ARG USE_CHINA_MIRROR=false
 # ==========================================
 FROM golang:1.24 AS apps_builder
 ARG USE_CHINA_MIRROR=false
+ARG PESQL_VERSION=unknown
 WORKDIR /app
 COPY apps/ ./apps/
 COPY scripts/build_apps.sh ./scripts/
@@ -19,7 +20,7 @@ RUN if [ "$USE_CHINA_MIRROR" = "true" ]; then \
         go env -w GOPROXY=https://goproxy.cn,direct; \
     fi && \
     chmod +x scripts/build_apps.sh && \
-    ./scripts/build_apps.sh ./apps ./output
+    PESQL_VERSION="${PESQL_VERSION}" ./scripts/build_apps.sh ./apps ./output
 
 # ==========================================
 # Stage 2: base_os (Setup OS dependencies)

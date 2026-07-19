@@ -25,10 +25,13 @@ type InstallConfig struct {
 
 var Config InstallConfig
 
+var Version = "dev"
+
 var RootCmd = &cobra.Command{
-	Use:   "pg_mgr",
-	Short: "PostgreSQL Enterprise Manager",
-	Long:  `pg_mgr is a pure Go tool that brings enterprise-level management capabilities to PostgreSQL databases.`,
+	Use:     "pg_mgr",
+	Short:   "PostgreSQL Enterprise Manager",
+	Long:    `pg_mgr is a pure Go tool that brings enterprise-level management capabilities to PostgreSQL databases.`,
+	Version: Version,
 }
 
 func Execute() {

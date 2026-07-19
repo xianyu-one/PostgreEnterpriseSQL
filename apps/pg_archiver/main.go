@@ -29,7 +29,15 @@ const bufferSize = 1024 * 1024
 // checkSumAlgo 定义使用的校验算法，这里使用 CRC64 ISO 标准，速度极快且适合检错
 var crcTable = crc64.MakeTable(crc64.ISO)
 
+var Version = "dev"
+
 func main() {
+	// Parse version command
+	if len(os.Args) >= 2 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("pg_archiver version %s\n", Version)
+		os.Exit(0)
+	}
+
 	// 1. 解析参数和环境变量
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "Usage: %s <source_path> <filename>\n", os.Args[0])
