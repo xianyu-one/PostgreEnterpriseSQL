@@ -1,0 +1,101 @@
+package cmd
+
+import (
+	"os"
+	"os/user"
+	"path/filepath"
+	"testing"
+
+	"pg_mgr/internal/config"
+)
+
+func TestModifyInstancePort(t *testing.T) {
+	// Bypass root check
+	oldCheck := modifyCheckRoot
+	modifyCheckRoot = func() bool { return true }
+	defer func() { modifyCheckRoot = oldCheck }()
+
+	// Get current user to avoid User lookup failures
+	currUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+
+	// Create temporary directories
+	tempDir, err := os.MkdirTemp("", "pg_mgr_modify_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dataDir := filepath.Join(tempDir, "data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatalf("failed to create data dir: %v", err)
+	}
+
+	// Write a mock postgresql.conf
+	confPath := filepath.Join(dataDir, "postgresql.conf")
+	initialConf := "# Some comment\nport = 5432\n"
+	if err := os.WriteFile(confPath, []byte(initialConf), 0644); err != nil {
+		t.Fatalf("failed to write postgresql.conf: %v", err)
+	}
+
+	// Mock registry file path
+	configPath := filepath.Join(tempDir, "conf.yaml")
+	config.ConfigFilePath = configPath
+	defer func() {
+		config.ConfigFilePath = "/etc/pg_mgr/conf.yaml"
+	}()
+
+	// Register instance in global configuration
+	config.Global.Instances = make(map[string]config.InstanceMeta)
+	config.Global.Instances["test-inst"] = config.InstanceMeta{
+		User:    currUser.Username,
+		DataDir: dataDir,
+		BinPath: "/usr/bin/postgres",
+		Port:    "5432",
+	}
+
+	// Set CLI variables
+	modifyPort = "5433"
+	modifyBinPath = ""
+	modifyDataDir = ""
+	modifyOSUser = ""
+	defer func() {
+		modifyPort = ""
+	}()
+
+	// Run modify logic
+	runModify("test-inst")
+
+	// Verify port is updated in config.Global
+	meta, exists := config.Global.Instances["test-inst"]
+	if !exists {
+		t.Fatalf("instance test-inst not found in registry after modify")
+	}
+	if meta.Port != "5433" {
+		t.Errorf("expected port in config to be 5433, got %s", meta.Port)
+	}
+
+	// Verify port is updated in postgresql.conf file
+	confBytes, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("failed to read postgresql.conf: %v", err)
+	}
+	confStr := string(confBytes)
+
+	// Our updatePostgresqlConfParam should have updated it
+	params := parsePostgresqlConf(confStr)
+	foundPort := false
+	for _, p := range params {
+		if p.Name == "port" {
+			foundPort = true
+			if p.Value != "5433" {
+				t.Errorf("expected port to be 5433 in postgresql.conf, got %s", p.Value)
+			}
+		}
+	}
+	if !foundPort {
+		t.Errorf("port param not found in postgresql.conf")
+	}
+}

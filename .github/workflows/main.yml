@@ -1,0 +1,296 @@
+name: Build and Upload to Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      pg_version:
+        description: 'PostgreSQL 版本 (例如: 16.9)'
+        required: true
+        default: '16.14'
+        type: string
+      os_identifier:
+        description: '操作系统标识'
+        required: true
+        default: 'RockyLinux8'
+        type: choice
+        options:
+          - RockyLinux8
+          - RockyLinux9
+          - RockyLinux10
+          - Ubuntu22.04
+          - Ubuntu24.04
+          - Ubuntu26.04
+          - Debian12
+      arch:
+        description: '目标架构'
+        required: true
+        default: 'amd64'
+        type: choice
+        options:
+          - amd64
+          - arm64
+      pgbackrest_version:
+        description: 'pgBackRest 版本 (例如: 2.58.0)'
+        required: true
+        default: '2.58.0'
+        type: string
+      repmgr_version:
+        description: 'repmgr 版本 (例如: v5.5.0)'
+        required: true
+        default: 'v5.5.0'
+        type: string
+      use_china_mirror:
+        description: '使用中国大陆镜像源 (容器系统、Golang、GitHub 代理等)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 允许 action 创建和更新 release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for multi-platform builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Prepare build variables
+        id: prep
+        run: |
+          PG_VERSION="${{ github.event.inputs.pg_version }}"
+          OS_ID="${{ github.event.inputs.os_identifier }}"
+          ARCH="${{ github.event.inputs.arch }}"
+          
+          # 从 '16.9' 生成 '16'
+          PG_MAJOR=$(echo $PG_VERSION | cut -d. -f1)
+          
+          # 转换操作系统标识为小写以进行匹配
+          OS_ID_LOWER=$(echo "$OS_ID" | tr '[:upper:]' '[:lower:]')
+          
+          # 根据操作系统标识确定 Docker 基础镜像
+          case "$OS_ID_LOWER" in
+            rockylinux8)
+              OS_IMAGE="rockylinux/rockylinux:8"
+              ;;
+            rockylinux9)
+              OS_IMAGE="rockylinux/rockylinux:9"
+              ;;
+            rockylinux10)
+              OS_IMAGE="rockylinux/rockylinux:10"
+              ;;
+            ubuntu22.04)
+              OS_IMAGE="ubuntu:22.04"
+              ;;
+            ubuntu24.04)
+              OS_IMAGE="ubuntu:24.04"
+              ;;
+            ubuntu26.04)
+              OS_IMAGE="ubuntu:26.04"
+              ;;
+            debian12)
+              OS_IMAGE="debian:12"
+              ;;
+            *)
+              echo "Unsupported OS Identifier: $OS_ID"
+              exit 1
+              ;;
+          esac
+          echo "os_image=${OS_IMAGE}" >> $GITHUB_OUTPUT
+          
+          # 规范化架构名称用于文件名 (例如 arm64 -> aarch64, amd64 -> x64)
+          ARCH_FOR_FILENAME=$ARCH
+          if [ "$ARCH" == "arm64" ]; then
+            ARCH_FOR_FILENAME="aarch64"
+          elif [ "$ARCH" == "amd64" ]; then
+            ARCH_FOR_FILENAME="x64"
+          fi
+          
+          # 构造最终的归档文件名
+          # 结果示例: postgresql-16.9-x64-RockyLinux8.tar.gz
+          ARCHIVE_NAME="postgresql-${PG_VERSION}-${ARCH_FOR_FILENAME}-${OS_ID}.tar.gz"
+          echo "archive_name=${ARCHIVE_NAME}" >> $GITHUB_OUTPUT
+          
+          # 构造 pg_rman 的分支名
+          PGRMAN_BRANCH="REL_${PG_MAJOR}_STABLE"
+          echo "pgrman_branch=${PGRMAN_BRANCH}" >> $GITHUB_OUTPUT
+
+          # 构造 Docker build platform 参数
+          PLATFORM="linux/${ARCH}"
+          echo "platform=${PLATFORM}" >> $GITHUB_OUTPUT
+
+          echo "OS Image: ${OS_IMAGE}"
+          echo "Platform: ${PLATFORM}"
+          echo "Archive Name: ${ARCHIVE_NAME}"
+          echo "pg_rman Branch: ${PGRMAN_BRANCH}"
+
+      - name: Manage Release Notes and Determine Latest
+        id: release_manager
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = `v${{ github.event.inputs.pg_version }}`;
+            const os = "${{ github.event.inputs.os_identifier }}";
+            const arch = "${{ github.event.inputs.arch }}";
+            const pgVersion = "${{ github.event.inputs.pg_version }}";
+            const pgbackrestVersion = "${{ github.event.inputs.pgbackrest_version }}";
+            const repmgrVersion = "${{ github.event.inputs.repmgr_version }}";
+            const pgrmanBranch = "${{ steps.prep.outputs.pgrman_branch }}";
+
+            const goTools = "`pg_archiver`, `pg_checker`, `pg_wal_cleaner`, `pg_mgr`";
+            const backupScripts = "`pgbackrest_backup.sh`, `pgrman_backup.sh`";
+
+            const rowIdentifier = `| **${os} (${arch})** |`;
+            const newRow = `| **${os} (${arch})** | \`${pgVersion}\` | \`${pgbackrestVersion}\` | \`${repmgrVersion}\` | \`${pgrmanBranch}\` | ${goTools} | ${backupScripts} |`;
+
+            let currentBody = "";
+            let releaseId = null;
+            try {
+              const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              currentBody = release.body || "";
+              releaseId = release.id;
+              console.log(`Found existing release for tag ${tag} (ID: ${releaseId}).`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error; // Rethrow unexpected errors
+              }
+              console.log(`No release found for tag ${tag}. A new one will be created.`);
+            }
+
+            // Split existing body into lines (preserve empty lines)
+            let lines = currentBody.split('\n');
+
+            // Find existing row using a normalized match (remove spaces, asterisks, ignore case)
+            const normalize = (str) => str.replace(/[\s\*]+/g, '').toLowerCase();
+            const targetNorm = normalize(`|${os}(${arch})|`);
+            
+            let foundIndex = -1;
+            for (let i = 0; i < lines.length; i++) {
+              const trimmed = lines[i].trim();
+              if (trimmed.startsWith('|') && normalize(trimmed).startsWith(targetNorm)) {
+                foundIndex = i;
+                break;
+              }
+            }
+
+            const header = "## Component Versions";
+            if (foundIndex !== -1) {
+              console.log("Found existing entry for this OS/Arch. Replacing it.");
+              lines[foundIndex] = newRow;
+            } else {
+              console.log("No entry for this OS/Arch. Appending to table or creating it.");
+              const headerIndex = lines.findIndex(line => line.trim() === header);
+              if (headerIndex !== -1) {
+                // Find where the table ends to insert the new row
+                let insertIndex = lines.length;
+                let seenTable = false;
+                for (let i = headerIndex + 1; i < lines.length; i++) {
+                  const line = lines[i].trim();
+                  if (line.startsWith('|')) {
+                    seenTable = true;
+                  } else if (seenTable) {
+                    insertIndex = i;
+                    break;
+                  }
+                }
+                lines.splice(insertIndex, 0, newRow);
+              } else {
+                // Table doesn't exist, create it at the end
+                if (lines.length > 0 && lines[lines.length - 1].trim() !== '') {
+                  lines.push('');
+                }
+                lines.push(header);
+                lines.push("");
+                lines.push("| OS (Arch) | PostgreSQL | pgBackRest | repmgr | pg_rman | Go Tools | Backup Scripts |");
+                lines.push("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
+                lines.push(newRow);
+              }
+            }
+
+            const newBody = lines.join('\n');
+            core.setOutput('body', newBody);
+
+            // Update release body directly if the release exists
+            if (releaseId) {
+              try {
+                await github.rest.repos.updateRelease({
+                  owner,
+                  repo,
+                  release_id: releaseId,
+                  body: newBody
+                });
+                console.log("Successfully updated existing release body directly via GitHub API.");
+              } catch (updateError) {
+                console.error("Failed to update release body directly:", updateError);
+              }
+            }
+
+            const newVersion = pgVersion;
+            let makeLatest = 'false';
+
+            try {
+              const { data: latestRelease } = await github.rest.repos.getLatestRelease({ owner, repo });
+              const currentLatestVersion = latestRelease.tag_name.replace(/^v/, '');
+              
+              makeLatest = 'false';
+              
+              const newParts = newVersion.split('.').map(Number);
+              const latestParts = currentLatestVersion.split('.').map(Number);
+              const len = Math.max(newParts.length, latestParts.length);
+
+              for (let i = 0; i < len; i++) {
+                const newPart = newParts[i] || 0;
+                const latestPart = latestParts[i] || 0;
+                if (newPart > latestPart) {
+                  makeLatest = 'true';
+                  break;
+                }
+                if (newPart < latestPart) {
+                  makeLatest = 'false';
+                  break;
+                }
+              }
+            } catch (error) {
+               if (error.status === 404) {
+                 console.log('No latest release found. This build will be marked as latest.');
+                 makeLatest = 'true';
+               } else {
+                 throw error;
+               }
+            }
+            console.log(`New version: ${newVersion}, Current latest will be updated: ${makeLatest}`);
+            core.setOutput('make_latest', makeLatest);
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and extract artifact
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ steps.prep.outputs.platform }}
+          push: false
+          build-args: |
+            OS_IMAGE=${{ steps.prep.outputs.os_image }}
+            PG_VERSION=${{ github.event.inputs.pg_version }}
+            PGBACKREST_VERSION=${{ github.event.inputs.pgbackrest_version }}
+            PGRMAN_BRANCH=${{ steps.prep.outputs.pgrman_branch }}
+            ARCHIVE_NAME=${{ steps.prep.outputs.archive_name }}
+            REPMGR_VERSION=${{ github.event.inputs.repmgr_version }}
+            USE_CHINA_MIRROR=${{ github.event.inputs.use_china_mirror }}
+          outputs: type=local,dest=./output
+
+      - name: Upload Artifact to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./output/${{ steps.prep.outputs.archive_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: v${{ github.event.inputs.pg_version }}
+          name: PostgreSQL ${{ github.event.inputs.pg_version }}
+          body: ${{ steps.release_manager.outputs.body }}
+          make_latest: ${{ steps.release_manager.outputs.make_latest }}
