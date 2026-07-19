@@ -148,7 +148,7 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const tag = `PostgreSQL ${{ github.event.inputs.pg_version }}`;
+            const tag = `PostgreSQL-${{ github.event.inputs.pg_version }}`;
             const os = "${{ github.event.inputs.os_identifier }}";
             const arch = "${{ github.event.inputs.arch }}";
             const pgVersion = "${{ github.event.inputs.pg_version }}";
@@ -306,7 +306,7 @@ jobs:
         with:
           files: ./output/${{ steps.prep.outputs.archive_name }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: PostgreSQL ${{ github.event.inputs.pg_version }}
+          tag_name: v${{ github.event.inputs.pg_version }}
           name: PostgreSQL ${{ github.event.inputs.pg_version }}
           body: ${{ steps.release_manager.outputs.body }}
           make_latest: ${{ steps.release_manager.outputs.make_latest }}
