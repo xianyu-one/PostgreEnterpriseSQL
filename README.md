@@ -168,3 +168,20 @@ To set a specific version at build time, specify the `PESQL_VERSION` environment
 PESQL_VERSION=v1.0.0 ./scripts/build_apps.sh ./apps ./output
 ```
 This compiles the tools and places the output binaries under the `output/bin` or `output/sbin` directory depending on their root execution requirements.
+
+---
+
+## License
+
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+
+### Third-Party Licenses
+
+This project packages, compiles, or integrates third-party components under their respective open-source licenses:
+- **PostgreSQL**: PostgreSQL License
+- **pgBackRest**: MIT License
+- **pg_rman**: BSD 3-Clause License
+- **repmgr**: GNU General Public License v3 (GPLv3)
+
+For detailed licensing information on third-party components, see [LICENSE-3RD-PARTY.md](LICENSE-3RD-PARTY.md).
+

@@ -1,0 +1,6 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: PostgresEnterpriseSQL
+
+Files: *
+Copyright: 2026 PostgresEnterpriseSQL Authors
+License: Apache-2.0
