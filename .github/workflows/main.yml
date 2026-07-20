@@ -8,6 +8,11 @@ on:
         required: true
         default: '16.14'
         type: string
+      pesql_tag:
+        description: 'PESQL 源码 Tag/版本 (默认: latest 表示自动使用最新的 vx.x.x Tag)'
+        required: true
+        default: 'latest'
+        type: string
       os_identifier:
         description: '操作系统标识'
         required: true
@@ -66,6 +71,7 @@ jobs:
           PG_VERSION="${{ github.event.inputs.pg_version }}"
           OS_ID="${{ github.event.inputs.os_identifier }}"
           ARCH="${{ github.event.inputs.arch }}"
+          PESQL_INPUT="${{ github.event.inputs.pesql_tag }}"
           
           # 从 '16.9' 生成 '16'
           PG_MAJOR=$(echo $PG_VERSION | cut -d. -f1)
@@ -111,15 +117,28 @@ jobs:
             ARCH_FOR_FILENAME="x64"
           fi
           
-          # Determine PESQL version
-          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            PESQL_VER=$(git describe --tags --exact-match 2>/dev/null || true)
-            if [ -z "$PESQL_VER" ]; then
-              SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
-              PESQL_VER="snapshot-${SHA}"
+          # Determine PESQL version and checkout target tag/ref if requested
+          if [ -z "$PESQL_INPUT" ] || [ "$PESQL_INPUT" == "latest" ]; then
+            LATEST_TAG=$(git tag -l "v*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n 1)
+            if [ -n "$LATEST_TAG" ]; then
+              echo "Checking out latest PESQL tag: ${LATEST_TAG}"
+              git checkout "$LATEST_TAG"
+              PESQL_VER="$LATEST_TAG"
+            else
+              if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                PESQL_VER=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --exact-match 2>/dev/null || true)
+                if [ -z "$PESQL_VER" ]; then
+                  SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
+                  PESQL_VER="snapshot-${SHA}"
+                fi
+              else
+                PESQL_VER="unknown"
+              fi
             fi
           else
-            PESQL_VER="unknown"
+            echo "Checking out specified PESQL tag/ref: ${PESQL_INPUT}"
+            git checkout "$PESQL_INPUT"
+            PESQL_VER="$PESQL_INPUT"
           fi
           echo "pesql_version=${PESQL_VER}" >> $GITHUB_OUTPUT
           
@@ -142,13 +161,13 @@ jobs:
           echo "pg_rman Branch: ${PGRMAN_BRANCH}"
           echo "PESQL Version: ${PESQL_VER}"
 
-      - name: Manage Release Notes and Determine Latest
+      - name: Manage Release Notes
         id: release_manager
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
-            const tag = `PostgreSQL-${{ github.event.inputs.pg_version }}`;
+            const tag = `postgresql-v${{ github.event.inputs.pg_version }}`;
             const os = "${{ github.event.inputs.os_identifier }}";
             const arch = "${{ github.event.inputs.arch }}";
             const pgVersion = "${{ github.event.inputs.pg_version }}";
@@ -159,7 +178,6 @@ jobs:
 
             const backupScripts = "`pgbackrest_backup.sh`, `pgrman_backup.sh`";
 
-            const rowIdentifier = `| **${os} (${arch})** |`;
             const newRow = `| **${os} (${arch})** | \`${pgVersion}\` | \`${pgbackrestVersion}\` | \`${repmgrVersion}\` | \`${pgrmanBranch}\` | \`${pesqlVersion}\` | ${backupScripts} |`;
 
             let currentBody = "";
@@ -244,42 +262,6 @@ jobs:
               }
             }
 
-            const newVersion = pgVersion;
-            let makeLatest = 'false';
-
-            try {
-              const { data: latestRelease } = await github.rest.repos.getLatestRelease({ owner, repo });
-              const currentLatestVersion = latestRelease.tag_name.replace(/^(PostgreSQL\s+|v)/i, '');
-              
-              makeLatest = 'false';
-              
-              const newParts = newVersion.split('.').map(Number);
-              const latestParts = currentLatestVersion.split('.').map(Number);
-              const len = Math.max(newParts.length, latestParts.length);
-
-              for (let i = 0; i < len; i++) {
-                const newPart = newParts[i] || 0;
-                const latestPart = latestParts[i] || 0;
-                if (newPart > latestPart) {
-                  makeLatest = 'true';
-                  break;
-                }
-                if (newPart < latestPart) {
-                  makeLatest = 'false';
-                  break;
-                }
-              }
-            } catch (error) {
-               if (error.status === 404) {
-                 console.log('No latest release found. This build will be marked as latest.');
-                 makeLatest = 'true';
-               } else {
-                 throw error;
-               }
-            }
-            console.log(`New version: ${newVersion}, Current latest will be updated: ${makeLatest}`);
-            core.setOutput('make_latest', makeLatest);
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -309,4 +291,4 @@ jobs:
           tag_name: postgresql-v${{ github.event.inputs.pg_version }}
           name: PostgreSQL ${{ github.event.inputs.pg_version }}
           body: ${{ steps.release_manager.outputs.body }}
-          make_latest: ${{ steps.release_manager.outputs.make_latest }}
+          make_latest: false
