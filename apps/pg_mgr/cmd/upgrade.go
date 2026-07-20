@@ -636,16 +636,41 @@ func runConfigMigrationWizard(oldDataDir, newDataDir string) {
 					firstHbaHeader = true
 				}
 
-				fmt.Printf("\nOld Rule: %s\n", text.FgGreen.Sprint(rule))
-				fmt.Printf("New HBA:  %s\n", text.FgRed.Sprint("[Not found]"))
+				fmt.Printf("\nHBA Rule: %s\n", text.FgHiYellow.Sprint(rule))
+				fmt.Printf("  Old rule: %s\n", text.FgGreen.Sprint(rule))
+				fmt.Printf("  New rule: %s\n", text.FgRed.Sprint("[Not found]"))
+				fmt.Println(i18n.T("migrate_prompt_options"))
 
-				if utils.PromptConfirm("Migrate this client authentication rule to the new pg_hba.conf?") {
+				var choice string
+				for {
+					choice = utils.PromptInput(i18n.T("migrate_prompt_choice"), "1")
+					if choice == "1" || choice == "2" || choice == "3" {
+						break
+					}
+					fmt.Println(text.FgHiRed.Sprint(i18n.T("err_invalid_choice")))
+				}
+
+				switch choice {
+				case "1":
 					err := utils.AppendToFile(newHbaPath, fmt.Sprintf("\n%s\n", rule))
 					if err != nil {
 						fmt.Printf("Error migrating HBA rule: %v\n", err)
 					} else {
-						fmt.Println(text.FgGreen.Sprint("Rule migrated successfully."))
+						fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_hba_success_old", rule)))
 						newRules = append(newRules, rule)
+					}
+				case "2":
+					fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_hba_success_new")))
+				case "3":
+					customRule := utils.PromptInput(i18n.T("migrate_hba_prompt_custom", rule), rule)
+					if strings.TrimSpace(customRule) != "" {
+						err := utils.AppendToFile(newHbaPath, fmt.Sprintf("\n%s\n", customRule))
+						if err != nil {
+							fmt.Printf("Error migrating custom HBA rule: %v\n", err)
+						} else {
+							fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_hba_success_custom", customRule)))
+							newRules = append(newRules, customRule)
+						}
 					}
 				}
 			}

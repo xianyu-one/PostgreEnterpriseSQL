@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
@@ -15,29 +16,50 @@ import (
 var startCmd = &cobra.Command{
 	Use:   "start [instance_name]",
 	Short: i18n.T("start_desc"),
-	Args:  cobra.ExactArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { manageService("start", args[0]) },
+	Args:  cobra.MaximumNArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("start", args) },
 }
 
 var stopCmd = &cobra.Command{
 	Use:   "stop [instance_name]",
 	Short: i18n.T("stop_desc"),
-	Args:  cobra.ExactArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { manageService("stop", args[0]) },
+	Args:  cobra.MaximumNArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("stop", args) },
+}
+
+var restartCmd = &cobra.Command{
+	Use:   "restart [instance_name]",
+	Short: i18n.T("restart_desc"),
+	Args:  cobra.MaximumNArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("restart", args) },
+}
+
+var reloadCmd = &cobra.Command{
+	Use:   "reload [instance_name]",
+	Short: i18n.T("reload_desc"),
+	Args:  cobra.MaximumNArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("reload", args) },
+}
+
+var statusCmd = &cobra.Command{
+	Use:   "status [instance_name]",
+	Short: i18n.T("status_desc"),
+	Args:  cobra.MaximumNArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("status", args) },
 }
 
 var enableCmd = &cobra.Command{
 	Use:   "enable [instance_name]",
 	Short: i18n.T("enable_desc"),
-	Args:  cobra.ExactArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { manageService("enable", args[0]) },
+	Args:  cobra.MaximumNArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("enable", args) },
 }
 
 var disableCmd = &cobra.Command{
 	Use:   "disable [instance_name]",
 	Short: i18n.T("disable_desc"),
-	Args:  cobra.ExactArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { manageService("disable", args[0]) },
+	Args:  cobra.MaximumNArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("disable", args) },
 }
 
 func init() {
@@ -54,10 +76,21 @@ func init() {
 
 	startCmd.ValidArgsFunction = compFunc
 	stopCmd.ValidArgsFunction = compFunc
+	restartCmd.ValidArgsFunction = compFunc
+	reloadCmd.ValidArgsFunction = compFunc
+	statusCmd.ValidArgsFunction = compFunc
 	enableCmd.ValidArgsFunction = compFunc
 	disableCmd.ValidArgsFunction = compFunc
 
-	RootCmd.AddCommand(startCmd, stopCmd, enableCmd, disableCmd)
+	RootCmd.AddCommand(startCmd, stopCmd, restartCmd, reloadCmd, statusCmd, enableCmd, disableCmd)
+}
+
+func runServiceCmd(action string, args []string) {
+	instanceName := "default"
+	if len(args) > 0 {
+		instanceName = args[0]
+	}
+	manageService(action, instanceName)
 }
 
 func manageService(action string, instanceName string) {
@@ -70,6 +103,22 @@ func manageService(action string, instanceName string) {
 	if !ok {
 		fmt.Println(i18n.T("err_not_reg", instanceName))
 		os.Exit(1)
+	}
+
+	if action == "status" {
+		if meta.User == "root" {
+			cmd := exec.Command("systemctl", "status", fmt.Sprintf("postgresql-%s.service", instanceName))
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			_ = cmd.Run()
+		} else {
+			cmdStr := fmt.Sprintf("systemctl --user status postgresql-%s.service", instanceName)
+			cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", cmdStr)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			_ = cmd.Run()
+		}
+		return
 	}
 
 	var err error

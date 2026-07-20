@@ -168,10 +168,6 @@ func runInstallPkg(cmd *cobra.Command) {
 		return utils.UntarGz(file, versionPathFull, uid, gid)
 	})
 
-	executeStep(i18n.T("step_ldconfig"), func() error {
-		return utils.RunCmd("/sbin/ldconfig", filepath.Join(versionPathFull, "lib"))
-	})
-
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
 }

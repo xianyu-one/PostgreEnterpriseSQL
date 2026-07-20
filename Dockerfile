@@ -51,7 +51,6 @@ RUN if [ -f /etc/os-release ]; then \
 # ==========================================
 FROM base_os AS builder
 
-# Re-declare arguments for use within this stage
 ARG PG_VERSION
 ARG PGBACKREST_VERSION
 ARG REPMGR_VERSION
@@ -59,8 +58,9 @@ ARG PGRMAN_BRANCH
 ARG ARCHIVE_NAME
 ARG USE_CHINA_MIRROR=false
 
-# Create build and release directories
 RUN mkdir /build && mkdir /release
+
+ENV LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/../lib'"
 
 # Compile PostgreSQL
 RUN cd /build && \
@@ -84,32 +84,31 @@ RUN cd /build && \
     make -j $CPU_CORES world && \
     make install-world
 
-# Configure environment path for PG tools and compilation
 ENV PKG_CONFIG_PATH="/build/postgresql-release/lib/pkgconfig"
 ENV PATH="/build/postgresql-release/bin:${PATH}"
 
-# Compile pgBackRest
+# Compile pgBackRest - Meson 需要单独显式传递 c_link_args 保证 RPATH 写入
 RUN cd /build && \
     PGBACKREST_URL="https://github.com/pgbackrest/pgbackrest/archive/release/${PGBACKREST_VERSION}.tar.gz"; \
     wget -q -O - "$PGBACKREST_URL" | \
         tar zx -C /build && \
     cd /build/pgbackrest-release-${PGBACKREST_VERSION} && \
-    meson setup build && \
+    meson setup build -Dc_link_args="-Wl,-rpath,\$ORIGIN/../lib" && \
     ninja -C build && \
     cp build/src/pgbackrest /build/postgresql-release/bin/
 
-# Compile pg_rman
+# Compile pg_rman - 通过 make 显式传递 LDFLAGS
 RUN cd /build && \
     git clone --branch ${PGRMAN_BRANCH} --depth 1 https://github.com/ossc-db/pg_rman.git && \
     cd /build/pg_rman && \
-    make && \
+    make LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/../lib'" && \
     make install
 
-# Compile repmgr
+# Compile repmgr - 在 configure 时期让其继承 RPATH
 RUN cd /build && \
     git clone --branch ${REPMGR_VERSION} --depth 1 https://github.com/EnterpriseDB/repmgr.git && \
     cd /build/repmgr && \
-    ./configure && \
+    ./configure LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/../lib'" && \
     make install
 
 # Copy custom Go utilities compiled in Stage 1
@@ -118,7 +117,7 @@ COPY --from=apps_builder --chmod=755 /app/output/ /build/postgresql-release/
 # Copy custom backup scripts to example_scripts
 COPY --chmod=755 apps/backup/ /build/postgresql-release/example_scripts/
 
-# Package the final build into a tarball
+# Package the final build into a tarball[cite: 1]
 RUN cd /build/postgresql-release && \
     tar -czvf /release/${ARCHIVE_NAME} ./*
 

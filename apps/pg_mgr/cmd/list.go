@@ -76,6 +76,7 @@ func runList() {
 		i18n.T("tbl_port"),
 		i18n.T("tbl_user"),
 		i18n.T("tbl_status"),
+		i18n.T("tbl_uptime"),
 		i18n.T("tbl_boot"),
 		i18n.T("tbl_datadir"),
 		i18n.T("tbl_cpu"),
@@ -111,12 +112,14 @@ func runList() {
 		}
 
 		cpuStr, memStr := process.GetInstanceResourceUsage(meta.DataDir)
+		uptimeStr := process.GetInstanceUptime(meta.DataDir)
 
 		t.AppendRow(table.Row{
 			text.FgHiCyan.Sprint(name),
 			meta.Port,
 			meta.User,
 			statusText,
+			uptimeStr,
 			bootText,
 			meta.DataDir,
 			cpuStr,
@@ -129,11 +132,13 @@ func runList() {
 	for _, proc := range runningProcs {
 		if !managedDirs[filepath.Clean(proc.DataDir)] {
 			cpuStr, memStr := process.GetInstanceResourceUsage(proc.DataDir)
+			uptimeStr := process.GetInstanceUptime(proc.DataDir, proc.PID)
 			t.AppendRow(table.Row{
 				text.FgHiYellow.Sprint("[Unmanaged]"),
 				proc.Port,
 				proc.OSUser,
 				text.FgHiGreen.Sprintf("active (pid:%s)", proc.PID),
+				uptimeStr,
 				text.FgHiRed.Sprint("N/A"),
 				proc.DataDir,
 				cpuStr,

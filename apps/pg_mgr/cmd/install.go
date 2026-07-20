@@ -194,10 +194,6 @@ func runInstall(cmd *cobra.Command) {
 		return utils.UntarGz(file, versionPathFull, uid, gid)
 	})
 
-	executeStep(i18n.T("step_ldconfig"), func() error {
-		return utils.RunCmd("/sbin/ldconfig", filepath.Join(versionPathFull, "lib"))
-	})
-
 	executeStep(i18n.T("step_env"), func() error {
 		bashProfile := filepath.Join(pgUserHome, ".bash_profile")
 		pgrcPath := filepath.Join(pgUserHome, ".pgrc")

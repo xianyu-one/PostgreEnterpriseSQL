@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"pg_mgr/internal/utils"
 )
@@ -316,4 +317,65 @@ func findPortsInNetFile(path string, inodes map[string]bool) []string {
 		}
 	}
 	return foundPorts
+}
+
+func GetInstanceUptime(dataDir string, fallbackPID ...string) string {
+	var pidStr string
+	if len(fallbackPID) > 0 {
+		pidStr = fallbackPID[0]
+	}
+
+	if dataDir != "" && dataDir != "Unknown" {
+		cleanDir := filepath.Clean(dataDir)
+		pmPidPath := filepath.Join(cleanDir, "postmaster.pid")
+		content, err := os.ReadFile(pmPidPath)
+		if err == nil {
+			lines := strings.Split(string(content), "\n")
+			if len(lines) >= 3 {
+				pCandidate := strings.TrimSpace(lines[0])
+				timeCandidate := strings.TrimSpace(lines[2])
+				if sec, err := strconv.ParseInt(timeCandidate, 10, 64); err == nil && sec > 0 {
+					if _, err := os.Stat(fmt.Sprintf("/proc/%s", pCandidate)); err == nil {
+						startTime := time.Unix(sec, 0)
+						return FormatDuration(time.Since(startTime))
+					}
+				}
+				if pidStr == "" {
+					pidStr = pCandidate
+				}
+			}
+		}
+	}
+
+	if pidStr != "" && pidStr != "Unknown" {
+		if fi, err := os.Stat(fmt.Sprintf("/proc/%s", pidStr)); err == nil {
+			return FormatDuration(time.Since(fi.ModTime()))
+		}
+	}
+
+	return "-"
+}
+
+func FormatDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	days := int(d / (24 * time.Hour))
+	d -= time.Duration(days) * 24 * time.Hour
+	hours := int(d / time.Hour)
+	d -= time.Duration(hours) * time.Hour
+	minutes := int(d / time.Minute)
+	seconds := int((d - time.Duration(minutes)*time.Minute) / time.Second)
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -51,6 +53,18 @@ var daemonStatusCmd = &cobra.Command{
 	Run:   func(cmd *cobra.Command, args []string) { runDaemonStatus() },
 }
 
+var daemonRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: i18n.T("daemon_restart_desc"),
+	Run:   func(cmd *cobra.Command, args []string) { runDaemonRestart() },
+}
+
+var daemonReloadCmd = &cobra.Command{
+	Use:   "reload",
+	Short: i18n.T("daemon_reload_desc"),
+	Run:   func(cmd *cobra.Command, args []string) { runDaemonReload() },
+}
+
 var daemonRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: i18n.T("daemon_run_desc"),
@@ -58,7 +72,7 @@ var daemonRunCmd = &cobra.Command{
 }
 
 func init() {
-	daemonCmd.AddCommand(daemonInstallCmd, daemonUninstallCmd, daemonStartCmd, daemonStopCmd, daemonStatusCmd, daemonRunCmd)
+	daemonCmd.AddCommand(daemonInstallCmd, daemonUninstallCmd, daemonStartCmd, daemonStopCmd, daemonRestartCmd, daemonReloadCmd, daemonStatusCmd, daemonRunCmd)
 	RootCmd.AddCommand(daemonCmd)
 }
 
@@ -89,6 +103,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%s daemon run
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 User=root
 
@@ -141,6 +156,24 @@ func runDaemonStop() {
 	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_stopped")))
 }
 
+func runDaemonRestart() {
+	ensureRoot()
+	if err := utils.RunCmd("systemctl", "restart", "pg_mgr.service"); err != nil {
+		fmt.Println(i18n.T("daemon_failed", err))
+		os.Exit(1)
+	}
+	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_restarted")))
+}
+
+func runDaemonReload() {
+	ensureRoot()
+	if err := utils.RunCmd("systemctl", "reload", "pg_mgr.service"); err != nil {
+		fmt.Println(i18n.T("daemon_failed", err))
+		os.Exit(1)
+	}
+	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_reloaded")))
+}
+
 func runDaemonStatus() {
 	ensureRoot()
 	cmd := exec.Command("systemctl", "status", "pg_mgr.service")
@@ -167,6 +200,15 @@ func runDaemonRun() {
 	defer logger.Close()
 
 	logger.Info("pg_mgr daemon starting...")
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+	go func() {
+		for range sigChan {
+			logger.Info("Received SIGHUP, reloading configuration...")
+			config.InitConfig()
+		}
+	}()
 
 	lastFullRunMinute := make(map[string]string)
 	lastIncrRunMinute := make(map[string]string)
