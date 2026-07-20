@@ -151,6 +151,145 @@ func detectPortFromProc(pid int) string {
 	return ""
 }
 
+type ProcInfo struct {
+	PID     string
+	PPID    string
+	CPU     float64
+	RSS     int64 // in KB
+	Command string
+}
+
+func GetInstanceResourceUsage(dataDir string) (string, string) {
+	if dataDir == "" || dataDir == "Unknown" {
+		return "0.0%", "0 B"
+	}
+	cleanTargetDir := filepath.Clean(dataDir)
+
+	out, err := exec.Command("ps", "-eo", "pid,ppid,%cpu,rss,args").Output()
+	if err != nil {
+		return "0.0%", "0 B"
+	}
+
+	var procs []ProcInfo
+	lines := strings.Split(string(out), "\n")
+	for i, line := range lines {
+		if i == 0 {
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		cpuVal, _ := strconv.ParseFloat(fields[2], 64)
+		rssVal, _ := strconv.ParseInt(fields[3], 10, 64)
+		cmd := strings.Join(fields[4:], " ")
+
+		procs = append(procs, ProcInfo{
+			PID:     fields[0],
+			PPID:    fields[1],
+			CPU:     cpuVal,
+			RSS:     rssVal,
+			Command: cmd,
+		})
+	}
+
+	// Step 1: Find main PID for the dataDir
+	var mainPID string
+
+	// Option A: Try postmaster.pid file
+	pmPidPath := filepath.Join(cleanTargetDir, "postmaster.pid")
+	pmContent, err := os.ReadFile(pmPidPath)
+	if err == nil {
+		pmLines := strings.Split(string(pmContent), "\n")
+		if len(pmLines) > 0 {
+			candidate := strings.TrimSpace(pmLines[0])
+			if _, err := strconv.Atoi(candidate); err == nil {
+				// Verify candidate PID exists in ps list
+				for _, p := range procs {
+					if p.PID == candidate {
+						mainPID = candidate
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Option B: Search ps commands if postmaster.pid not matched
+	if mainPID == "" {
+		for _, p := range procs {
+			if isValidPg(p.Command) {
+				args := strings.Fields(p.Command)
+				for i := 0; i < len(args); i++ {
+					if args[i] == "-D" && i+1 < len(args) {
+						if filepath.Clean(args[i+1]) == cleanTargetDir {
+							mainPID = p.PID
+							break
+						}
+					} else if strings.HasPrefix(args[i], "--config-file=") {
+						cfgPath := strings.TrimPrefix(args[i], "--config-file=")
+						if filepath.Clean(filepath.Dir(cfgPath)) == cleanTargetDir {
+							mainPID = p.PID
+							break
+						}
+					}
+				}
+				if mainPID != "" {
+					break
+				}
+			}
+		}
+	}
+
+	if mainPID == "" {
+		return "0.0%", "0 B"
+	}
+
+	// Step 2: Collect mainPID and all child PIDs
+	pidSet := map[string]bool{mainPID: true}
+	added := true
+	for added {
+		added = false
+		for _, p := range procs {
+			if !pidSet[p.PID] && pidSet[p.PPID] {
+				pidSet[p.PID] = true
+				added = true
+			}
+		}
+	}
+
+	// Step 3: Aggregate CPU and RSS
+	var totalCPU float64
+	var totalRSS int64
+	for _, p := range procs {
+		if pidSet[p.PID] {
+			totalCPU += p.CPU
+			totalRSS += p.RSS
+		}
+	}
+
+	cpuStr := fmt.Sprintf("%.1f%%", totalCPU)
+	memStr := formatKB(totalRSS)
+	return cpuStr, memStr
+}
+
+func formatKB(kb int64) string {
+	if kb <= 0 {
+		return "0 B"
+	}
+	bytes := float64(kb * 1024)
+	if bytes < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(kb))
+	} else if bytes < 1024*1024*1024 {
+		return fmt.Sprintf("%.1f MB", bytes/(1024*1024))
+	}
+	return fmt.Sprintf("%.2f GB", bytes/(1024*1024*1024))
+}
+
 func findPortsInNetFile(path string, inodes map[string]bool) []string {
 	var foundPorts []string
 	content, err := os.ReadFile(path)

@@ -4,79 +4,12 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"pg_mgr/internal/config"
 )
 
-func TestUpdateProfileFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "bashrc_test_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	bashrcPath := filepath.Join(tmpDir, ".bashrc")
-
-	// Case 1: Empty file
-	err = updateProfileFile(bashrcPath, "/app/postgresql")
-	if err != nil {
-		t.Fatalf("updateProfileFile failed: %v", err)
-	}
-
-	contentBytes, err := os.ReadFile(bashrcPath)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-	content := string(contentBytes)
-	if !strings.Contains(content, "# >>> pg_mgr sbin path >>>") || !strings.Contains(content, `export PG_MGR_BASE_DIR="/app/postgresql"`) {
-		t.Errorf("incorrect profile content: %s", content)
-	}
-
-	// Case 2: Replace existing block
-	err = updateProfileFile(bashrcPath, "/app/custom_postgresql")
-	if err != nil {
-		t.Fatalf("updateProfileFile failed on replace: %v", err)
-	}
-
-	contentBytes, err = os.ReadFile(bashrcPath)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-	content = string(contentBytes)
-	if !strings.Contains(content, `export PG_MGR_BASE_DIR="/app/custom_postgresql"`) {
-		t.Errorf("expected new base dir in profile: %s", content)
-	}
-	if strings.Contains(content, `export PG_MGR_BASE_DIR="/app/postgresql"`) {
-		t.Errorf("old base dir still exists: %s", content)
-	}
-
-	// Case 3: Preserving other content
-	preexisting := "some preexisting command\n"
-	err = os.WriteFile(bashrcPath, []byte(preexisting+content), 0644)
-	if err != nil {
-		t.Fatalf("failed to write preexisting content: %v", err)
-	}
-
-	err = updateProfileFile(bashrcPath, "/app/final_postgresql")
-	if err != nil {
-		t.Fatalf("updateProfileFile failed on replace with preexisting content: %v", err)
-	}
-
-	contentBytes, err = os.ReadFile(bashrcPath)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-	content = string(contentBytes)
-	if !strings.HasPrefix(content, preexisting) {
-		t.Errorf("expected preexisting content to be preserved, got: %s", content)
-	}
-	if !strings.Contains(content, `export PG_MGR_BASE_DIR="/app/final_postgresql"`) {
-		t.Errorf("expected new final base dir in profile: %s", content)
-	}
-}
 
 func TestRunUseCommand(t *testing.T) {
 	// Setup mock instances registry

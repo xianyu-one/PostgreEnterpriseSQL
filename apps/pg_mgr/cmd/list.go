@@ -77,7 +77,9 @@ func runList() {
 		i18n.T("tbl_user"),
 		i18n.T("tbl_status"),
 		i18n.T("tbl_boot"),
-		i18n.T("tbl_cmd"),
+		i18n.T("tbl_datadir"),
+		i18n.T("tbl_cpu"),
+		i18n.T("tbl_mem"),
 	})
 
 	managedDirs := make(map[string]bool)
@@ -108,10 +110,7 @@ func runList() {
 			bootText = text.FgHiGreen.Sprint(bootOut)
 		}
 
-		execCmd := meta.BinPath + " -D " + meta.DataDir
-		if len(execCmd) > 40 {
-			execCmd = execCmd[:37] + "..."
-		}
+		cpuStr, memStr := process.GetInstanceResourceUsage(meta.DataDir)
 
 		t.AppendRow(table.Row{
 			text.FgHiCyan.Sprint(name),
@@ -119,7 +118,9 @@ func runList() {
 			meta.User,
 			statusText,
 			bootText,
-			execCmd,
+			meta.DataDir,
+			cpuStr,
+			memStr,
 		})
 	}
 
@@ -127,17 +128,16 @@ func runList() {
 	runningProcs := process.FindPgProcesses()
 	for _, proc := range runningProcs {
 		if !managedDirs[filepath.Clean(proc.DataDir)] {
-			cmdDisp := proc.Command
-			if len(cmdDisp) > 40 {
-				cmdDisp = cmdDisp[:37] + "..."
-			}
+			cpuStr, memStr := process.GetInstanceResourceUsage(proc.DataDir)
 			t.AppendRow(table.Row{
 				text.FgHiYellow.Sprint("[Unmanaged]"),
 				proc.Port,
 				proc.OSUser,
 				text.FgHiGreen.Sprintf("active (pid:%s)", proc.PID),
 				text.FgHiRed.Sprint("N/A"),
-				cmdDisp,
+				proc.DataDir,
+				cpuStr,
+				memStr,
 			})
 		}
 	}

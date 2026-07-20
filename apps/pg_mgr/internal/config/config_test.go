@@ -92,3 +92,84 @@ instances:
 		t.Errorf("expected migrated config file NOT to contain 'binpath:', file content:\n%s", newContent)
 	}
 }
+
+func TestNewConfigFieldsAndBackup(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pg_mgr_new_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	origPath := ConfigFilePath
+	defer func() {
+		ConfigFilePath = origPath
+		viper.Reset()
+	}()
+
+	ConfigFilePath = filepath.Join(tmpDir, "conf.yaml")
+	viper.Reset()
+
+	// 1. Test defaults
+	InitConfig()
+	if Global.LogDir != "/var/log/pg_mgr" {
+		t.Errorf("expected default LogDir to be /var/log/pg_mgr, got '%s'", Global.LogDir)
+	}
+	if Global.LogLevel != "error" {
+		t.Errorf("expected default LogLevel to be error, got '%s'", Global.LogLevel)
+	}
+
+	// 2. Test saving global config
+	err = SaveGlobalConfig("/app/pg", "/var/custom/log", "debug")
+	if err != nil {
+		t.Fatalf("SaveGlobalConfig failed: %v", err)
+	}
+
+	// Re-init and check
+	viper.Reset()
+	InitConfig()
+	if Global.BaseDir != "/app/pg" || Global.LogDir != "/var/custom/log" || Global.LogLevel != "debug" {
+		t.Errorf("config values mismatch after save: %+v", Global)
+	}
+
+	// 3. Test saving instance pgrman config
+	err = SaveInstanceToRegistry("testdb", "postgres", "/data", "/bin/postgres", "5432")
+	if err != nil {
+		t.Fatalf("SaveInstanceToRegistry failed: %v", err)
+	}
+
+	bk := &PgrmanConfig{
+		Tool:           "pgrman",
+		BackupDir:      "/backup",
+		SrvLogPath:     "/data/log",
+		ArcLogPath:     "/backup/archive",
+		CompressData:   "YES",
+		KeepArcLogDays: 5,
+		KeepSrvLogDays: 10,
+		KeepDataDays:   15,
+		FullBackupCron: "0 2 * * 0",
+		IncrBackupCron: "0 3 * * *",
+		FullBackupDay:  1,
+		FullBackupHour: 3,
+		FullBackupMin:  30,
+		IncrBackupHour: 4,
+		IncrBackupMin:  0,
+	}
+	err = SaveInstancePgrmanConfig("testdb", bk)
+	if err != nil {
+		t.Fatalf("SaveInstancePgrmanConfig failed: %v", err)
+	}
+
+	// Reload config and verify
+	viper.Reset()
+	InitConfig()
+	inst, ok := Global.Instances["testdb"]
+	if !ok {
+		t.Fatalf("testdb instance not found")
+	}
+	if inst.Pgrman == nil {
+		t.Fatalf("pgrman config is nil")
+	}
+	if inst.Pgrman.Tool != "pgrman" || inst.Pgrman.BackupDir != "/backup" || inst.Pgrman.KeepArcLogDays != 5 || inst.Pgrman.FullBackupCron != "0 2 * * 0" {
+		t.Errorf("pgrman config value mismatch: %+v", inst.Pgrman)
+	}
+}
