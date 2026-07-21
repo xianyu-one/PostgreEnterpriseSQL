@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,3 +94,83 @@ func TestRunBackupList(t *testing.T) {
 		t.Errorf("expected output to contain 'inst2', got:\n%s", output)
 	}
 }
+
+func TestRunPgrmanEditFlags(t *testing.T) {
+	oldRootCheck := ensureRootFunc
+	ensureRootFunc = func() {}
+	defer func() { ensureRootFunc = oldRootCheck }()
+
+	tempDir, err := os.MkdirTemp("", "pg_mgr_edit_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	configPath := filepath.Join(tempDir, "conf.yaml")
+	config.ConfigFilePath = configPath
+	defer func() {
+		config.ConfigFilePath = "/etc/pg_mgr/conf.yaml"
+	}()
+
+	oldBackupDir := filepath.Join(tempDir, "backup/inst1")
+	newBackupDir := filepath.Join(tempDir, "backup/inst1_new")
+	arcLogDir := filepath.Join(tempDir, "archive/inst1")
+
+	currentOSUser := "root"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		currentOSUser = u.Username
+	}
+
+	config.Global.Instances = map[string]config.InstanceMeta{
+		"inst1": {
+			User:    currentOSUser,
+			DataDir: filepath.Join(tempDir, "inst1"),
+			Port:    "5432",
+			Pgrman: &config.PgrmanConfig{
+				Tool:           "pgrman",
+				BackupDir:      oldBackupDir,
+				SrvLogPath:     filepath.Join(tempDir, "inst1/log"),
+				ArcLogPath:     arcLogDir,
+				CompressData:   "YES",
+				KeepArcLogDays: 7,
+				KeepSrvLogDays: 14,
+				KeepDataDays:   14,
+				FullBackupCron: "0 2 * * 0",
+				IncrBackupCron: "0 3 * * *",
+			},
+		},
+	}
+
+	pgrmanInstance = "inst1"
+	pgrmanEditBackupDir = newBackupDir
+	pgrmanEditFullCron = "0 4 * * 0"
+	pgrmanEditIncrCron = "0 5 * * *"
+
+	cmd := pgrmanEditCmd
+	_ = cmd.Flags().Set("instance", "inst1")
+	_ = cmd.Flags().Set("backup-dir", newBackupDir)
+	_ = cmd.Flags().Set("full-cron", "0 4 * * 0")
+	_ = cmd.Flags().Set("incr-cron", "0 5 * * *")
+
+	runPgrmanEdit(cmd)
+
+	updatedInst := config.Global.Instances["inst1"]
+	if updatedInst.Pgrman == nil {
+		t.Fatalf("expected pgrman config to be present")
+	}
+	if updatedInst.Pgrman.BackupDir != newBackupDir {
+		t.Errorf("expected BackupDir to be %s, got %s", newBackupDir, updatedInst.Pgrman.BackupDir)
+	}
+	if updatedInst.Pgrman.FullBackupCron != "0 4 * * 0" {
+		t.Errorf("expected FullBackupCron to be '0 4 * * 0', got %s", updatedInst.Pgrman.FullBackupCron)
+	}
+	if updatedInst.Pgrman.IncrBackupCron != "0 5 * * *" {
+		t.Errorf("expected IncrBackupCron to be '0 5 * * *', got %s", updatedInst.Pgrman.IncrBackupCron)
+	}
+
+	iniPath := filepath.Join(newBackupDir, "pg_rman.ini")
+	if _, err := os.Stat(iniPath); err != nil {
+		t.Errorf("expected pg_rman.ini file to exist at %s", iniPath)
+	}
+}
+

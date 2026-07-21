@@ -20,8 +20,17 @@ import (
 )
 
 var (
-	pgrmanInstance string
-	pgrmanMode     string
+	pgrmanInstance      string
+	pgrmanMode          string
+	pgrmanEditBackupDir string
+	pgrmanEditSrvLog    string
+	pgrmanEditArcLog    string
+	pgrmanEditCompress  string
+	pgrmanEditKeepArc   int
+	pgrmanEditKeepSrv   int
+	pgrmanEditKeepData  int
+	pgrmanEditFullCron  string
+	pgrmanEditIncrCron  string
 )
 
 var backupCmd = &cobra.Command{
@@ -38,6 +47,13 @@ var pgrmanInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: i18n.T("pgrman_init_desc"),
 	Run:   func(cmd *cobra.Command, args []string) { runPgrmanInit() },
+}
+
+var pgrmanEditCmd = &cobra.Command{
+	Use:     "edit",
+	Aliases: []string{"modify", "set"},
+	Short:   i18n.T("pgrman_edit_desc"),
+	Run:     func(cmd *cobra.Command, args []string) { runPgrmanEdit(cmd) },
 }
 
 var pgrmanUninitCmd = &cobra.Command{
@@ -71,6 +87,17 @@ func init() {
 	pgrmanRunCmd.Flags().StringVarP(&pgrmanInstance, "instance", "i", "", "Instance name")
 	pgrmanRunCmd.Flags().StringVarP(&pgrmanMode, "mode", "m", "full", "Backup mode (full or incremental)")
 
+	pgrmanEditCmd.Flags().StringVarP(&pgrmanInstance, "instance", "i", "", "Instance name")
+	pgrmanEditCmd.Flags().StringVarP(&pgrmanEditBackupDir, "backup-dir", "B", "", "Backup directory (-B)")
+	pgrmanEditCmd.Flags().StringVar(&pgrmanEditSrvLog, "srv-log", "", "Server log directory (SRVLOG_PATH)")
+	pgrmanEditCmd.Flags().StringVar(&pgrmanEditArcLog, "arc-log", "", "Archive log directory (ARCLOG_PATH)")
+	pgrmanEditCmd.Flags().StringVar(&pgrmanEditCompress, "compress", "", "Compress backup data (YES/NO)")
+	pgrmanEditCmd.Flags().IntVar(&pgrmanEditKeepArc, "keep-arc-days", 0, "Retention days for archive logs (KEEP_ARCLOG_DAYS)")
+	pgrmanEditCmd.Flags().IntVar(&pgrmanEditKeepSrv, "keep-srv-days", 0, "Retention days for server logs (KEEP_SRVLOG_DAYS)")
+	pgrmanEditCmd.Flags().IntVar(&pgrmanEditKeepData, "keep-data-days", 0, "Retention days for backup data (KEEP_DATA_DAYS)")
+	pgrmanEditCmd.Flags().StringVar(&pgrmanEditFullCron, "full-cron", "", "Full backup Crontab schedule")
+	pgrmanEditCmd.Flags().StringVar(&pgrmanEditIncrCron, "incr-cron", "", "Incremental backup Crontab schedule")
+
 	// Autocomplete for instance flag
 	compFunc := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		var list []string
@@ -81,8 +108,9 @@ func init() {
 	}
 	pgrmanShowCmd.RegisterFlagCompletionFunc("instance", compFunc)
 	pgrmanRunCmd.RegisterFlagCompletionFunc("instance", compFunc)
+	pgrmanEditCmd.RegisterFlagCompletionFunc("instance", compFunc)
 
-	pgrmanCmd.AddCommand(pgrmanInitCmd, pgrmanUninitCmd, pgrmanShowCmd, pgrmanRunCmd)
+	pgrmanCmd.AddCommand(pgrmanInitCmd, pgrmanUninitCmd, pgrmanEditCmd, pgrmanShowCmd, pgrmanRunCmd)
 	backupCmd.AddCommand(pgrmanCmd, backupListCmd)
 	RootCmd.AddCommand(backupCmd)
 }
@@ -521,3 +549,174 @@ func promptInt(label string, defaultVal int) int {
 	}
 	return val
 }
+
+func runPgrmanEdit(cmd *cobra.Command) {
+	ensureRoot()
+
+	var configured []string
+	for name, meta := range config.Global.Instances {
+		if meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman" {
+			configured = append(configured, name)
+		}
+	}
+
+	if len(configured) == 0 {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_configured_instances")))
+		os.Exit(1)
+	}
+
+	selectedInst := pgrmanInstance
+	if selectedInst == "" {
+		fmt.Println("Available instances with backup configuration:")
+		for _, name := range configured {
+			fmt.Printf(" - %s\n", name)
+		}
+		selectedInst = utils.PromptInput(i18n.T("prompt_backup_inst"), configured[0])
+	}
+
+	meta, ok := config.Global.Instances[selectedInst]
+	if !ok || meta.Pgrman == nil || meta.Pgrman.Tool != "pgrman" {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_backup_config", selectedInst)))
+		os.Exit(1)
+	}
+
+	bk := meta.Pgrman
+
+	hasFlags := cmd.Flags().Changed("backup-dir") ||
+		cmd.Flags().Changed("srv-log") ||
+		cmd.Flags().Changed("arc-log") ||
+		cmd.Flags().Changed("compress") ||
+		cmd.Flags().Changed("keep-arc-days") ||
+		cmd.Flags().Changed("keep-srv-days") ||
+		cmd.Flags().Changed("keep-data-days") ||
+		cmd.Flags().Changed("full-cron") ||
+		cmd.Flags().Changed("incr-cron")
+
+	backupDir := bk.BackupDir
+	srvLogPath := bk.SrvLogPath
+	arcLogPath := bk.ArcLogPath
+	compressData := bk.CompressData
+	keepArc := bk.KeepArcLogDays
+	keepSrv := bk.KeepSrvLogDays
+	keepData := bk.KeepDataDays
+	fullCron := getFullCronExpr(bk)
+	incrCron := getIncrCronExpr(bk)
+
+	if hasFlags {
+		if cmd.Flags().Changed("backup-dir") {
+			backupDir = pgrmanEditBackupDir
+		}
+		if cmd.Flags().Changed("srv-log") {
+			srvLogPath = pgrmanEditSrvLog
+		}
+		if cmd.Flags().Changed("arc-log") {
+			arcLogPath = pgrmanEditArcLog
+		}
+		if cmd.Flags().Changed("compress") {
+			compressData = strings.ToUpper(pgrmanEditCompress)
+		}
+		if cmd.Flags().Changed("keep-arc-days") {
+			keepArc = pgrmanEditKeepArc
+		}
+		if cmd.Flags().Changed("keep-srv-days") {
+			keepSrv = pgrmanEditKeepSrv
+		}
+		if cmd.Flags().Changed("keep-data-days") {
+			keepData = pgrmanEditKeepData
+		}
+		if cmd.Flags().Changed("full-cron") {
+			fullCron = pgrmanEditFullCron
+			parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+			if _, err := parser.Parse(fullCron); err != nil {
+				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_invalid_cron", err)))
+				os.Exit(1)
+			}
+		}
+		if cmd.Flags().Changed("incr-cron") {
+			incrCron = pgrmanEditIncrCron
+			parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+			if _, err := parser.Parse(incrCron); err != nil {
+				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_invalid_cron", err)))
+				os.Exit(1)
+			}
+		}
+	} else {
+		backupDir = utils.PromptInput(i18n.T("prompt_backup_dir"), backupDir)
+		srvLogPath = utils.PromptInput(i18n.T("prompt_srv_log"), srvLogPath)
+		arcLogPath = utils.PromptInput(i18n.T("prompt_arc_log"), arcLogPath)
+		compressData = utils.PromptInput(i18n.T("prompt_compress"), compressData)
+
+		keepArc = promptInt(i18n.T("prompt_keep_arc"), keepArc)
+		keepSrv = promptInt(i18n.T("prompt_keep_srv"), keepSrv)
+		keepData = promptInt(i18n.T("prompt_keep_data"), keepData)
+
+		fullCron = promptCron(i18n.T("prompt_full_cron"), fullCron)
+		incrCron = promptCron(i18n.T("prompt_incr_cron"), incrCron)
+	}
+
+	u, err := user.Lookup(meta.User)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		os.Exit(1)
+	}
+	uid, _ := strconv.Atoi(u.Uid)
+	gid, _ := strconv.Atoi(u.Gid)
+
+	err = os.MkdirAll(backupDir, 0755)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		os.Exit(1)
+	}
+	_ = os.Chown(backupDir, uid, gid)
+
+	err = os.MkdirAll(arcLogPath, 0755)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		os.Exit(1)
+	}
+	_ = os.Chown(arcLogPath, uid, gid)
+
+	pgrmanBin := getPgrmanBin(meta)
+	initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)
+	execCmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", initCmdStr)
+	out, err := execCmd.CombinedOutput()
+	if err != nil {
+		outStr := string(out)
+		if !strings.Contains(strings.ToLower(outStr), "already initialized") {
+			fmt.Printf("pg_rman init note: %s\n", outStr)
+		}
+	}
+
+	iniPath := filepath.Join(backupDir, "pg_rman.ini")
+	iniContent := fmt.Sprintf("SRVLOG_PATH='%s'\nARCLOG_PATH='%s'\nCOMPRESS_DATA=%s\nKEEP_ARCLOG_DAYS=%d\nKEEP_SRVLOG_DAYS=%d\nKEEP_DATA_DAYS=%d\n",
+		srvLogPath, arcLogPath, compressData, keepArc, keepSrv, keepData)
+
+	err = os.WriteFile(iniPath, []byte(iniContent), 0644)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		os.Exit(1)
+	}
+	_ = os.Chown(iniPath, uid, gid)
+
+	updatedConfig := &config.PgrmanConfig{
+		Tool:           "pgrman",
+		BackupDir:      backupDir,
+		SrvLogPath:     srvLogPath,
+		ArcLogPath:     arcLogPath,
+		CompressData:   compressData,
+		KeepArcLogDays: keepArc,
+		KeepSrvLogDays: keepSrv,
+		KeepDataDays:   keepData,
+		FullBackupCron: fullCron,
+		IncrBackupCron: incrCron,
+	}
+
+	err = config.SaveInstancePgrmanConfig(selectedInst, updatedConfig)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		os.Exit(1)
+	}
+
+	fmt.Println(text.FgHiGreen.Sprint(i18n.T("pgrman_edit_success", selectedInst)))
+}
+

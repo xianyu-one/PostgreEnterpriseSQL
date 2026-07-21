@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
@@ -347,6 +348,58 @@ func runUpgrade() {
 			}
 			return nil
 		})
+
+		// Re-initialize pg_rman backup catalog for upgraded database if configured
+		if meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman" && meta.Pgrman.BackupDir != "" {
+			executeStep(i18n.T("step_reinit_pgrman"), func() error {
+				oldBackupDir := meta.Pgrman.BackupDir
+				if oldBackupDir != "" {
+					if _, err := os.Stat(oldBackupDir); err == nil {
+						oldBackupDirArchived := oldBackupDir + "_old_" + currentVer.Raw
+						_ = os.RemoveAll(oldBackupDirArchived)
+						if err := os.Rename(oldBackupDir, oldBackupDirArchived); err != nil {
+							return fmt.Errorf("failed to rename old pg_rman backup directory: %w", err)
+						}
+					}
+
+					if err := os.MkdirAll(oldBackupDir, 0755); err != nil {
+						return fmt.Errorf("failed to create new pg_rman backup directory: %w", err)
+					}
+					_ = os.Chown(oldBackupDir, uid, gid)
+
+					if meta.Pgrman.ArcLogPath != "" {
+						_ = os.MkdirAll(meta.Pgrman.ArcLogPath, 0755)
+						_ = os.Chown(meta.Pgrman.ArcLogPath, uid, gid)
+					}
+
+					pgrmanBin := filepath.Join(newBinDir, "pg_rman")
+					if _, err := os.Stat(pgrmanBin); err != nil {
+						pgrmanBin = getPgrmanBin(meta)
+					}
+
+					initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, oldBackupDir, newDataDir)
+					execCmd := exec.Command("su", "-s", "/bin/bash", "-", osUser, "-c", initCmdStr)
+					out, err := execCmd.CombinedOutput()
+					if err != nil {
+						outStr := string(out)
+						if !strings.Contains(strings.ToLower(outStr), "already initialized") {
+							return fmt.Errorf("pg_rman init failed: %s", outStr)
+						}
+					}
+
+					iniPath := filepath.Join(oldBackupDir, "pg_rman.ini")
+					iniContent := fmt.Sprintf("SRVLOG_PATH='%s'\nARCLOG_PATH='%s'\nCOMPRESS_DATA=%s\nKEEP_ARCLOG_DAYS=%d\nKEEP_SRVLOG_DAYS=%d\nKEEP_DATA_DAYS=%d\n",
+						meta.Pgrman.SrvLogPath, meta.Pgrman.ArcLogPath, meta.Pgrman.CompressData,
+						meta.Pgrman.KeepArcLogDays, meta.Pgrman.KeepSrvLogDays, meta.Pgrman.KeepDataDays)
+
+					if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
+						return fmt.Errorf("failed to write pg_rman.ini: %w", err)
+					}
+					_ = os.Chown(iniPath, uid, gid)
+				}
+				return nil
+			})
+		}
 	}
 
 	// Step 5: Update systemd service file
@@ -391,6 +444,9 @@ WantedBy=%s
 	executeStep(i18n.T("step_update_env"), func() error {
 		pgrcPath := filepath.Join(u.HomeDir, ".pgrc")
 		backupDir := filepath.Join(baseDir, fmt.Sprintf("backup_%s", UpgConfig.InstanceName))
+		if meta.Pgrman != nil && meta.Pgrman.BackupDir != "" {
+			backupDir = meta.Pgrman.BackupDir
+		}
 
 		envs := map[string]string{
 			"PG_VERSION_PATH":   fmt.Sprintf("'%s'", newVersionPathFull),

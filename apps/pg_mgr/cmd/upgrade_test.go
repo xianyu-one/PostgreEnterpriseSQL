@@ -270,3 +270,44 @@ func TestNormalizeSpaceAndIsRulePresent(t *testing.T) {
 		t.Errorf("expected rule %q to NOT be present", testRule2)
 	}
 }
+
+func TestPgrmanUpgradeRename(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pg_mgr_upg_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	oldBackupDir := filepath.Join(tempDir, "backup/inst1")
+	err = os.MkdirAll(oldBackupDir, 0755)
+	if err != nil {
+		t.Fatalf("failed to create old backup dir: %v", err)
+	}
+	dummyBackupFile := filepath.Join(oldBackupDir, "backup.tar")
+	_ = os.WriteFile(dummyBackupFile, []byte("old backup data"), 0644)
+
+	currentVer := "15.4"
+	oldBackupDirArchived := oldBackupDir + "_old_" + currentVer
+
+	if _, err := os.Stat(oldBackupDir); err == nil {
+		_ = os.RemoveAll(oldBackupDirArchived)
+		if err := os.Rename(oldBackupDir, oldBackupDirArchived); err != nil {
+			t.Fatalf("failed to rename old backup dir: %v", err)
+		}
+	}
+
+	if err := os.MkdirAll(oldBackupDir, 0755); err != nil {
+		t.Fatalf("failed to create new backup dir: %v", err)
+	}
+
+	archivedFile := filepath.Join(oldBackupDirArchived, "backup.tar")
+	if _, err := os.Stat(archivedFile); err != nil {
+		t.Errorf("expected archived file to exist at %s", archivedFile)
+	}
+
+	entries, err := os.ReadDir(oldBackupDir)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("expected new backup dir to be empty, got %d entries", len(entries))
+	}
+}
+
