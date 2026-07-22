@@ -115,7 +115,7 @@ func runModify(instanceName string) {
 	// Update postgresql.conf if port changed
 	if modifyPort != "" {
 		confPath := filepath.Join(meta.DataDir, "postgresql.conf")
-		if err := updatePostgresqlConfParam(confPath, "port", newPort); err != nil {
+		if err := utils.UpdatePostgresqlConfParam(confPath, "port", newPort); err != nil {
 			fmt.Printf("Warning: Failed to update port in %s: %v\n", confPath, err)
 		}
 		// Also update .pgrc

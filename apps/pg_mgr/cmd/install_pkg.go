@@ -42,11 +42,21 @@ func runInstallPkg(cmd *cobra.Command) {
 	if !Config.Silent {
 		Config.TarPath = utils.PromptInput(i18n.T("prompt_tar"), Config.TarPath)
 
-		detectedMajor, detectedMinor, detected := utils.DetectVersionFromTar(Config.TarPath)
+		detectedMajor, detectedMinor, detected, vErr := utils.DetectAndVerifyTarVersion(Config.TarPath)
+		if vErr != nil && !detected {
+			fmt.Println(text.FgHiYellow.Sprintf("Warning: Version inspection failed: %v", vErr))
+		} else if vErr != nil && detected {
+			fmt.Println(text.FgHiYellow.Sprintf("Warning: Package binary execution check failed: %v (Using filename version: %s.%s)", vErr, detectedMajor, detectedMinor))
+		}
+
 		if detected {
+			fnMajor, fnMinor, fnOk := utils.DetectVersionFromTar(Config.TarPath)
+			if fnOk && (fnMajor != detectedMajor || fnMinor != detectedMinor) {
+				fmt.Println(text.FgHiYellow.Sprintf("Warning: Version mismatch between tarball filename (%s.%s) and binary output (%s.%s). Using binary version.", fnMajor, fnMinor, detectedMajor, detectedMinor))
+			}
 			Config.MajorVersion = detectedMajor
 			Config.MinorVersion = detectedMinor
-			fmt.Printf("Auto-detected version from tarball: %s.%s\n", detectedMajor, detectedMinor)
+			fmt.Printf("Auto-detected and verified version from tarball: %s.%s\n", detectedMajor, detectedMinor)
 		} else {
 			baseDir := config.Global.BaseDir
 			installed, err := utils.GetInstalledVersions(baseDir)
@@ -67,7 +77,7 @@ func runInstallPkg(cmd *cobra.Command) {
 			Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
 		}
 	} else {
-		detectedMajor, detectedMinor, detected := utils.DetectVersionFromTar(Config.TarPath)
+		detectedMajor, detectedMinor, detected, _ := utils.DetectAndVerifyTarVersion(Config.TarPath)
 		if detected {
 			if !cmd.Flags().Changed("major") {
 				Config.MajorVersion = detectedMajor

@@ -90,3 +90,47 @@ export PGPORT='5433'
 		t.Errorf("expected PG_VERSION_PATH to be added, got: %s", content)
 	}
 }
+
+func TestArchiveCommandParsingAndBuilding(t *testing.T) {
+	// Case 1: No user command, only pg_mgr command
+	cmd1 := BuildArchiveCommand("", "cp %p /arc/%f")
+	user1, pgMgr1 := ParseArchiveCommand(cmd1)
+	if user1 != "" {
+		t.Errorf("expected empty userPart, got: '%s'", user1)
+	}
+	if pgMgr1 != "cp %p /arc/%f" {
+		t.Errorf("expected pgMgrPart 'cp %%p /arc/%%f', got: '%s'", pgMgr1)
+	}
+
+	// Case 2: Preserve user command when setting pg_mgr command
+	userCmd := "test ! -f /user/arc/%f && cp %p /user/arc/%f"
+	cmd2 := BuildArchiveCommand(userCmd, "cp %p /pgmgr/arc/%f")
+	user2, pgMgr2 := ParseArchiveCommand(cmd2)
+	if user2 != userCmd {
+		t.Errorf("expected userPart '%s', got: '%s'", userCmd, user2)
+	}
+	if pgMgr2 != "cp %p /pgmgr/arc/%f" {
+		t.Errorf("expected pgMgrPart 'cp %%p /pgmgr/arc/%%f', got: '%s'", pgMgr2)
+	}
+
+	// Case 3: Update pg_mgr command preserving user command
+	cmd3 := BuildArchiveCommand(user2, "cp %p /new/pgmgr/arc/%f")
+	user3, pgMgr3 := ParseArchiveCommand(cmd3)
+	if user3 != userCmd {
+		t.Errorf("expected userPart '%s', got: '%s'", userCmd, user3)
+	}
+	if pgMgr3 != "cp %p /new/pgmgr/arc/%f" {
+		t.Errorf("expected pgMgrPart 'cp %%p /new/pgmgr/arc/%%f', got: '%s'", pgMgr3)
+	}
+
+	// Case 4: Disable/Remove pg_mgr command preserving user command
+	cmd4 := BuildArchiveCommand(user3, "")
+	user4, pgMgr4 := ParseArchiveCommand(cmd4)
+	if user4 != userCmd {
+		t.Errorf("expected userPart '%s', got: '%s'", userCmd, user4)
+	}
+	if pgMgr4 != "" {
+		t.Errorf("expected empty pgMgrPart, got: '%s'", pgMgr4)
+	}
+}
+

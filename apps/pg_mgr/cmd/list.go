@@ -73,6 +73,7 @@ func runList() {
 	t.SetOutputMirror(os.Stdout)
 	t.AppendHeader(table.Row{
 		i18n.T("tbl_inst"),
+		i18n.T("tbl_ver_version"),
 		i18n.T("tbl_port"),
 		i18n.T("tbl_user"),
 		i18n.T("tbl_status"),
@@ -113,9 +114,11 @@ func runList() {
 
 		cpuStr, memStr := process.GetInstanceResourceUsage(meta.DataDir)
 		uptimeStr := process.GetInstanceUptime(meta.DataDir)
+		verStr := utils.GetPGVersion(meta.BinPath, meta.DataDir, meta.User)
 
 		t.AppendRow(table.Row{
 			text.FgHiCyan.Sprint(name),
+			verStr,
 			meta.Port,
 			meta.User,
 			statusText,
@@ -133,8 +136,10 @@ func runList() {
 		if !managedDirs[filepath.Clean(proc.DataDir)] {
 			cpuStr, memStr := process.GetInstanceResourceUsage(proc.DataDir)
 			uptimeStr := process.GetInstanceUptime(proc.DataDir, proc.PID)
+			verStr := utils.GetPGVersion(proc.BinPath, proc.DataDir, proc.OSUser)
 			t.AppendRow(table.Row{
 				text.FgHiYellow.Sprint("[Unmanaged]"),
+				verStr,
 				proc.Port,
 				proc.OSUser,
 				text.FgHiGreen.Sprintf("active (pid:%s)", proc.PID),

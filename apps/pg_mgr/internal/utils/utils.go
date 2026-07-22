@@ -204,3 +204,125 @@ func UpdatePgrc(pgrcPath string, envs map[string]string) error {
 
 	return os.WriteFile(pgrcPath, []byte(newContent), 0644)
 }
+
+func UpdatePostgresqlConfParam(filePath string, name string, val string) error {
+	contentBytes, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	content := string(contentBytes)
+
+	formattedVal := val
+	if (strings.ContainsAny(val, " \t;&|<>") || strings.Contains(val, " ")) && !strings.HasPrefix(val, "'") && !strings.HasPrefix(val, "\"") {
+		formattedVal = fmt.Sprintf("'%s'", strings.ReplaceAll(val, "'", "''"))
+	}
+
+	rePattern := `(?m)^[ \t]*` + regexp.QuoteMeta(name) + `[ \t]*=.*$`
+	re := regexp.MustCompile(rePattern)
+	if re.MatchString(content) {
+		newContent := re.ReplaceAllLiteralString(content, fmt.Sprintf("%s = %s", name, formattedVal))
+		return os.WriteFile(filePath, []byte(newContent), 0644)
+	}
+
+	return AppendToFile(filePath, fmt.Sprintf("\n%s = %s\n", name, formattedVal))
+}
+
+func GetPostgresqlConfParam(filePath string, name string) (string, bool) {
+	contentBytes, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", false
+	}
+	re := regexp.MustCompile(`(?m)^[ \t]*` + regexp.QuoteMeta(name) + `[ \t]*=[ \t]*(.+)`)
+	matches := re.FindStringSubmatch(string(contentBytes))
+	if len(matches) < 2 {
+		return "", false
+	}
+	rawVal := strings.TrimSpace(matches[1])
+	if strings.HasPrefix(rawVal, "'") {
+		idx := strings.LastIndex(rawVal, "'")
+		if idx > 0 {
+			rawVal = rawVal[1:idx]
+		}
+	} else if strings.HasPrefix(rawVal, "\"") {
+		idx := strings.LastIndex(rawVal, "\"")
+		if idx > 0 {
+			rawVal = rawVal[1:idx]
+		}
+	} else {
+		if idx := strings.Index(rawVal, "#"); idx != -1 {
+			rawVal = strings.TrimSpace(rawVal[:idx])
+		}
+	}
+	return rawVal, true
+}
+
+const (
+	PgMgrArchiveStartMarker = "true PG_MGR_ARCHIVE_START"
+	PgMgrArchiveEndMarker   = "true PG_MGR_ARCHIVE_END"
+)
+
+func ParseArchiveCommand(rawCmd string) (userPart string, pgMgrPart string) {
+	rawCmd = strings.TrimSpace(rawCmd)
+	if strings.HasPrefix(rawCmd, "'") && strings.HasSuffix(rawCmd, "'") && len(rawCmd) >= 2 {
+		rawCmd = rawCmd[1 : len(rawCmd)-1]
+	}
+
+	startIdx := strings.Index(rawCmd, PgMgrArchiveStartMarker)
+	endIdx := strings.Index(rawCmd, PgMgrArchiveEndMarker)
+
+	if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+		semiIdx := strings.Index(rawCmd[startIdx:], ";")
+		if semiIdx != -1 {
+			cmdStart := startIdx + semiIdx + 1
+			pgMgrPart = strings.TrimSpace(rawCmd[cmdStart:endIdx])
+			pgMgrPart = strings.TrimSuffix(pgMgrPart, ";")
+			pgMgrPart = strings.TrimSpace(pgMgrPart)
+		}
+
+		blockStart := startIdx
+		blockEnd := endIdx + len(PgMgrArchiveEndMarker)
+
+		left := rawCmd[:blockStart]
+		right := rawCmd[blockEnd:]
+
+		left = strings.TrimSpace(left)
+		left = strings.TrimSuffix(left, ";")
+		left = strings.TrimSpace(left)
+
+		right = strings.TrimSpace(right)
+		right = strings.TrimPrefix(right, ";")
+		right = strings.TrimSpace(right)
+
+		if left != "" && right != "" {
+			userPart = left + " ; " + right
+		} else if left != "" {
+			userPart = left
+		} else {
+			userPart = right
+		}
+		return userPart, pgMgrPart
+	}
+
+	return rawCmd, ""
+}
+
+func BuildArchiveCommand(userPart string, newPgMgrCmd string) string {
+	userPart = strings.TrimSpace(userPart)
+	userPart = strings.TrimSuffix(userPart, ";")
+	userPart = strings.TrimSpace(userPart)
+
+	newPgMgrCmd = strings.TrimSpace(newPgMgrCmd)
+
+	if newPgMgrCmd == "" {
+		return userPart
+	}
+
+	tagBlock := fmt.Sprintf("true PG_MGR_ARCHIVE_START ; %s ; true PG_MGR_ARCHIVE_END", newPgMgrCmd)
+
+	if userPart == "" {
+		return tagBlock
+	}
+
+	return fmt.Sprintf("%s ; %s", userPart, tagBlock)
+}
+

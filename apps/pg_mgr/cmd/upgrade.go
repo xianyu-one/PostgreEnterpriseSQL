@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -556,20 +555,7 @@ func getConfParamsMap(filePath string) (map[string]string, error) {
 }
 
 func updatePostgresqlConfParam(filePath string, name string, val string) error {
-	contentBytes, err := os.ReadFile(filePath)
-	if err != nil {
-		return err
-	}
-	content := string(contentBytes)
-
-	rePattern := `(?m)^[ \t]*` + regexp.QuoteMeta(name) + `[ \t]*=.*$`
-	re := regexp.MustCompile(rePattern)
-	if re.MatchString(content) {
-		newContent := re.ReplaceAllLiteralString(content, fmt.Sprintf("%s = %s", name, val))
-		return os.WriteFile(filePath, []byte(newContent), 0644)
-	}
-
-	return utils.AppendToFile(filePath, fmt.Sprintf("\n%s = %s\n", name, val))
+	return utils.UpdatePostgresqlConfParam(filePath, name, val)
 }
 
 func parsePgHbaConf(content string) []string {
