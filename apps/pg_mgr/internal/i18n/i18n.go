@@ -213,6 +213,9 @@ var translationMap = map[string]map[string]string{
 		"lbl_user_archive_cmd":      "User Custom Archive Command",
 		"tbl_archive_mode":          "Archive Mode",
 		"tbl_pgmgr_archive":         "pg_mgr Archive Command",
+		"upgrade_collation_notice":  "\n[NOTICE] Database upgrade completed. Please inspect all databases and execute the following SQL statement in each database to refresh collation versions if needed:\n  ALTER DATABASE <dbname> REFRESH COLLATION VERSION;",
+		"archive_process_terminated": "Restarted archiver process (executed SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';) to apply configuration.",
+		"archive_check_notice":      "\n[NOTICE] Please connect to the database (e.g. psql -p %s) and verify the active archive command using:\n  SELECT setting FROM pg_settings WHERE name = 'archive_command';\n  (or: SHOW archive_command;)\nIf the old command is still shown, execute:\n  SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';",
 	},
 	"zh-CN": {
 		"req_root":                  "此程序必须以 root 权限运行 (sudo)。",
@@ -420,6 +423,9 @@ var translationMap = map[string]map[string]string{
 		"lbl_user_archive_cmd":      "用户自定义归档命令",
 		"tbl_archive_mode":          "归档模式",
 		"tbl_pgmgr_archive":         "pg_mgr 归档命令",
+		"upgrade_collation_notice":  "\n【提示】数据库升级成功！请检查各个数据库，为防止排序规则版本不匹配 (Collation Version Mismatch) 的警告，请及时登录各数据库并执行：\n  ALTER DATABASE <数据库名> REFRESH COLLATION VERSION;",
+		"archive_process_terminated": "已重启归档进程 (已执行 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';)，以确保新归档命令生效。",
+		"archive_check_notice":      "\n【提示】请登录数据库 (例如 psql -p %s) 并通过 SELECT 语句核对数据库进程当前实际生效的归档命令：\n  SELECT setting FROM pg_settings WHERE name = 'archive_command';\n  (或执行: SHOW archive_command;)\n如查看到仍为旧命令，可再次在数据库中执行以下命令强制重启归档进程：\n  SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';",
 	},
 }
 

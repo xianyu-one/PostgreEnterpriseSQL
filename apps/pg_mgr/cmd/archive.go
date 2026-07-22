@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -259,9 +260,12 @@ func runArchiveEnable(instanceName string) {
 			}
 			fmt.Println(text.FgGreen.Sprint("PostgreSQL configuration reloaded."))
 		}
+
+		restartArchiverBackend(meta)
 	}
 
 	fmt.Println(text.FgGreen.Sprint(i18n.T("archive_enable_success", instanceName)))
+	fmt.Println(text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
 }
 
 func runArchiveDisable(instanceName string) {
@@ -323,7 +327,27 @@ func runArchiveDisable(instanceName string) {
 			}
 			fmt.Println(text.FgGreen.Sprint("PostgreSQL configuration reloaded."))
 		}
+
+		restartArchiverBackend(meta)
 	}
 
 	fmt.Println(text.FgGreen.Sprint(i18n.T("archive_disable_success", instanceName)))
+	fmt.Println(text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
+}
+
+func restartArchiverBackend(meta config.InstanceMeta) {
+	binDir := filepath.Dir(meta.BinPath)
+	psqlBin := filepath.Join(binDir, "psql")
+	if _, err := os.Stat(psqlBin); err != nil {
+		psqlBin = "psql"
+	}
+
+	sqlCmd := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';"
+	cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/../lib:$LD_LIBRARY_PATH && %s -p %s -d postgres -c %q",
+		binDir, psqlBin, meta.Port, sqlCmd)
+
+	out, err := utils.RunAsUserWithOutput(meta.User, cmd)
+	if err == nil && !strings.Contains(out, "FATAL") && !strings.Contains(out, "ERROR") {
+		fmt.Println(text.FgGreen.Sprint(i18n.T("archive_process_terminated")))
+	}
 }

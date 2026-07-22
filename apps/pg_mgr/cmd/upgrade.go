@@ -479,6 +479,7 @@ WantedBy=%s
 
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("upgrade_success", UpgConfig.InstanceName, targetVer.Raw)))
+	fmt.Println(text.FgHiYellow.Sprint(i18n.T("upgrade_collation_notice")))
 }
 
 type ConfigParam struct {
