@@ -275,8 +275,17 @@ func ParseArchiveCommand(rawCmd string) (userPart string, pgMgrPart string) {
 		if semiIdx != -1 {
 			cmdStart := startIdx + semiIdx + 1
 			pgMgrPart = strings.TrimSpace(rawCmd[cmdStart:endIdx])
-			pgMgrPart = strings.TrimSuffix(pgMgrPart, ";")
-			pgMgrPart = strings.TrimSpace(pgMgrPart)
+			for {
+				trimmed := strings.TrimSpace(pgMgrPart)
+				if strings.HasSuffix(trimmed, ";") {
+					pgMgrPart = strings.TrimSuffix(trimmed, ";")
+				} else if strings.HasSuffix(trimmed, "&&") {
+					pgMgrPart = strings.TrimSuffix(trimmed, "&&")
+				} else {
+					pgMgrPart = trimmed
+					break
+				}
+			}
 		}
 
 		blockStart := startIdx
@@ -317,7 +326,7 @@ func BuildArchiveCommand(userPart string, newPgMgrCmd string) string {
 		return userPart
 	}
 
-	tagBlock := fmt.Sprintf("true PG_MGR_ARCHIVE_START ; %s ; true PG_MGR_ARCHIVE_END", newPgMgrCmd)
+	tagBlock := fmt.Sprintf("true PG_MGR_ARCHIVE_START ; %s && true PG_MGR_ARCHIVE_END", newPgMgrCmd)
 
 	if userPart == "" {
 		return tagBlock
@@ -325,4 +334,44 @@ func BuildArchiveCommand(userPart string, newPgMgrCmd string) string {
 
 	return fmt.Sprintf("%s ; %s", userPart, tagBlock)
 }
+
+func ExtractArchiveDirFromCmd(pgMgrCmd string) string {
+	pgMgrCmd = strings.TrimSpace(pgMgrCmd)
+	if pgMgrCmd == "" {
+		return ""
+	}
+
+	reExport := regexp.MustCompile(`export[ \t]+PG_ARCHDIR=['"]?([^'\";&\s]+)['"]?`)
+	matches := reExport.FindStringSubmatch(pgMgrCmd)
+	if len(matches) > 1 {
+		return filepath.Clean(matches[1])
+	}
+
+	reCp := regexp.MustCompile(`cp[ \t]+%p[ \t]+([^;\&\s]+)/%f`)
+	matches = reCp.FindStringSubmatch(pgMgrCmd)
+	if len(matches) > 1 {
+		return filepath.Clean(matches[1])
+	}
+
+	reTest := regexp.MustCompile(`test[ \t]+![ \t]+-f[ \t]+([^;\&\s]+)/%f`)
+	matches = reTest.FindStringSubmatch(pgMgrCmd)
+	if len(matches) > 1 {
+		return filepath.Clean(matches[1])
+	}
+
+	return ""
+}
+
+func GetPgMgrArchiveDir(confPath string) string {
+	fullCmd, ok := GetPostgresqlConfParam(confPath, "archive_command")
+	if !ok || fullCmd == "" {
+		return ""
+	}
+	_, pgMgrPart := ParseArchiveCommand(fullCmd)
+	if pgMgrPart == "" {
+		return ""
+	}
+	return ExtractArchiveDirFromCmd(pgMgrPart)
+}
+
 

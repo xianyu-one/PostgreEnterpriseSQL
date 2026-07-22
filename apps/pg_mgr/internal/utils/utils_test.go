@@ -93,34 +93,37 @@ export PGPORT='5433'
 
 func TestArchiveCommandParsingAndBuilding(t *testing.T) {
 	// Case 1: No user command, only pg_mgr command
-	cmd1 := BuildArchiveCommand("", "cp %p /arc/%f")
+	cmd1 := BuildArchiveCommand("", "export PG_ARCHDIR=/arc && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f")
+	if !strings.HasSuffix(cmd1, "&& true PG_MGR_ARCHIVE_END") {
+		t.Errorf("expected tagBlock to end with '&& true PG_MGR_ARCHIVE_END', got: '%s'", cmd1)
+	}
 	user1, pgMgr1 := ParseArchiveCommand(cmd1)
 	if user1 != "" {
 		t.Errorf("expected empty userPart, got: '%s'", user1)
 	}
-	if pgMgr1 != "cp %p /arc/%f" {
-		t.Errorf("expected pgMgrPart 'cp %%p /arc/%%f', got: '%s'", pgMgr1)
+	if pgMgr1 != "export PG_ARCHDIR=/arc && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f" {
+		t.Errorf("expected pgMgrPart 'export PG_ARCHDIR=/arc && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f', got: '%s'", pgMgr1)
 	}
 
 	// Case 2: Preserve user command when setting pg_mgr command
 	userCmd := "test ! -f /user/arc/%f && cp %p /user/arc/%f"
-	cmd2 := BuildArchiveCommand(userCmd, "cp %p /pgmgr/arc/%f")
+	cmd2 := BuildArchiveCommand(userCmd, "export PG_ARCHDIR=/pgmgr/arc && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f")
 	user2, pgMgr2 := ParseArchiveCommand(cmd2)
 	if user2 != userCmd {
 		t.Errorf("expected userPart '%s', got: '%s'", userCmd, user2)
 	}
-	if pgMgr2 != "cp %p /pgmgr/arc/%f" {
-		t.Errorf("expected pgMgrPart 'cp %%p /pgmgr/arc/%%f', got: '%s'", pgMgr2)
+	if pgMgr2 != "export PG_ARCHDIR=/pgmgr/arc && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f" {
+		t.Errorf("expected pgMgrPart 'export PG_ARCHDIR=/pgmgr/arc && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f', got: '%s'", pgMgr2)
 	}
 
 	// Case 3: Update pg_mgr command preserving user command
-	cmd3 := BuildArchiveCommand(user2, "cp %p /new/pgmgr/arc/%f")
+	cmd3 := BuildArchiveCommand(user2, "export PG_ARCHDIR=/new/pgmgr/arc && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f")
 	user3, pgMgr3 := ParseArchiveCommand(cmd3)
 	if user3 != userCmd {
 		t.Errorf("expected userPart '%s', got: '%s'", userCmd, user3)
 	}
-	if pgMgr3 != "cp %p /new/pgmgr/arc/%f" {
-		t.Errorf("expected pgMgrPart 'cp %%p /new/pgmgr/arc/%%f', got: '%s'", pgMgr3)
+	if pgMgr3 != "export PG_ARCHDIR=/new/pgmgr/arc && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f" {
+		t.Errorf("expected pgMgrPart 'export PG_ARCHDIR=/new/pgmgr/arc && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f', got: '%s'", pgMgr3)
 	}
 
 	// Case 4: Disable/Remove pg_mgr command preserving user command
@@ -133,4 +136,41 @@ func TestArchiveCommandParsingAndBuilding(t *testing.T) {
 		t.Errorf("expected empty pgMgrPart, got: '%s'", pgMgr4)
 	}
 }
+
+func TestExtractArchiveDirFromCmd(t *testing.T) {
+	cmdNew := "export PG_ARCHDIR=/app/postgresql/archive/homedb && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f"
+	if dir := ExtractArchiveDirFromCmd(cmdNew); dir != "/app/postgresql/archive/homedb" {
+		t.Errorf("expected '/app/postgresql/archive/homedb', got '%s'", dir)
+	}
+
+	cmdLegacy1 := "test ! -f /var/archive/inst1/%f && cp %p /var/archive/inst1/%f"
+	if dir := ExtractArchiveDirFromCmd(cmdLegacy1); dir != "/var/archive/inst1" {
+		t.Errorf("expected '/var/archive/inst1', got '%s'", dir)
+	}
+
+	cmdLegacy2 := "cp %p /custom/path/%f"
+	if dir := ExtractArchiveDirFromCmd(cmdLegacy2); dir != "/custom/path" {
+		t.Errorf("expected '/custom/path', got '%s'", dir)
+	}
+}
+
+func TestGetPgMgrArchiveDir(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "conf_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	confPath := filepath.Join(tempDir, "postgresql.conf")
+	confContent := "archive_mode = on\narchive_command = 'true PG_MGR_ARCHIVE_START ; export PG_ARCHDIR=/app/postgresql/archive/homedb && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f && true PG_MGR_ARCHIVE_END'\n"
+	if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
+		t.Fatalf("failed to write conf: %v", err)
+	}
+
+	dir := GetPgMgrArchiveDir(confPath)
+	if dir != "/app/postgresql/archive/homedb" {
+		t.Errorf("expected '/app/postgresql/archive/homedb', got '%s'", dir)
+	}
+}
+
 

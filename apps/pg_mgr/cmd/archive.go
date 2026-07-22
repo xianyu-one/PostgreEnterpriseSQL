@@ -189,13 +189,13 @@ func runArchiveEnable(instanceName string) {
 			os.MkdirAll(cleanDir, 0755)
 			os.Chown(cleanDir, uid, gid)
 		}
-		newPgMgrCmd = fmt.Sprintf("test ! -f %s/%%f && cp %%p %s/%%f", cleanDir, cleanDir)
+		newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", cleanDir)
 	}
 
 	if newPgMgrCmd == "" && !archiveSilent {
 		choice := utils.PromptInput("Select configuration mode [1: Directory, 2: Command]", "1")
 		if choice == "1" {
-			defaultDir := filepath.Join(config.Global.BaseDir, "archivelog", instanceName)
+			defaultDir := filepath.Join(config.Global.BaseDir, "archive", instanceName)
 			dir := utils.PromptInput(i18n.T("prompt_archive_dir"), defaultDir)
 			cleanDir := filepath.Clean(dir)
 			u, err := user.Lookup(meta.User)
@@ -205,9 +205,10 @@ func runArchiveEnable(instanceName string) {
 				os.MkdirAll(cleanDir, 0755)
 				os.Chown(cleanDir, uid, gid)
 			}
-			newPgMgrCmd = fmt.Sprintf("test ! -f %s/%%f && cp %%p %s/%%f", cleanDir, cleanDir)
+			newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", cleanDir)
 		} else {
-			newPgMgrCmd = utils.PromptInput(i18n.T("prompt_archive_cmd"), "cp %p /var/lib/postgresql/archive/%f")
+			defaultCmd := fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", filepath.Join(config.Global.BaseDir, "archive", instanceName))
+			newPgMgrCmd = utils.PromptInput(i18n.T("prompt_archive_cmd"), defaultCmd)
 		}
 	}
 

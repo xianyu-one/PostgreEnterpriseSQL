@@ -185,6 +185,12 @@ func runPgrmanInit() {
 	defaultBackupDir := filepath.Join(config.Global.BaseDir, "backup", selectedInst)
 	defaultSrvLog := filepath.Join(meta.DataDir, "log")
 	defaultArcLog := filepath.Join(config.Global.BaseDir, "archive", selectedInst)
+
+	confPath := filepath.Join(meta.DataDir, "postgresql.conf")
+	if pgmgrArcDir := utils.GetPgMgrArchiveDir(confPath); pgmgrArcDir != "" {
+		defaultArcLog = pgmgrArcDir
+	}
+
 	defaultCompress := "YES"
 	defaultKeepArc := 7
 	defaultKeepSrv := 14
