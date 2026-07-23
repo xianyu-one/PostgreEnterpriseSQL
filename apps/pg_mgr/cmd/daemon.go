@@ -284,9 +284,10 @@ func runPgRmanBackup(name string, instance config.InstanceMeta, mode string) err
 	pgrmanBin := getPgrmanBin(instance)
 	cmdStr := fmt.Sprintf("%s backup -p %s -D %s --backup-mode=%s --with-serverlog -B %s && %s validate -B %s",
 		pgrmanBin, instance.Port, instance.DataDir, mode, bk.BackupDir, pgrmanBin, bk.BackupDir)
-	logger.Info("Executing backup command: %s as user %s", cmdStr, instance.User)
+	fullCmdStr := utils.BuildInstanceCmd(instance, cmdStr)
+	logger.Info("Executing backup command: %s as user %s", fullCmdStr, instance.User)
 
-	cmd := exec.Command("su", "-s", "/bin/bash", "-", instance.User, "-c", cmdStr)
+	cmd := exec.Command("su", "-s", "/bin/bash", "-", instance.User, "-c", fullCmdStr)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("command execution failed: %v, output: %s", err, string(out))

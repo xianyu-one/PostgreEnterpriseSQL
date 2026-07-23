@@ -336,17 +336,19 @@ func runArchiveDisable(instanceName string) {
 }
 
 func restartArchiverBackend(meta config.InstanceMeta) {
-	binDir := filepath.Dir(meta.BinPath)
-	psqlBin := filepath.Join(binDir, "psql")
-	if _, err := os.Stat(psqlBin); err != nil {
-		psqlBin = "psql"
+	binDir := utils.GetInstanceBinDir(meta)
+	psqlBin := "psql"
+	if binDir != "" {
+		candidate := filepath.Join(binDir, "psql")
+		if _, err := os.Stat(candidate); err == nil {
+			psqlBin = candidate
+		}
 	}
 
 	sqlCmd := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';"
-	cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/../lib:$LD_LIBRARY_PATH && %s -p %s -d postgres -c %q",
-		binDir, psqlBin, meta.Port, sqlCmd)
+	cmd := fmt.Sprintf("%s -p %s -d postgres -c %q", psqlBin, meta.Port, sqlCmd)
 
-	out, err := utils.RunAsUserWithOutput(meta.User, cmd)
+	out, err := utils.RunAsUserWithOutputForInstance(meta.User, meta, cmd)
 	if err == nil && !strings.Contains(out, "FATAL") && !strings.Contains(out, "ERROR") {
 		fmt.Println(text.FgGreen.Sprint(i18n.T("archive_process_terminated")))
 	}

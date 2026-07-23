@@ -113,7 +113,8 @@ func manageService(action string, instanceName string) {
 			_ = cmd.Run()
 		} else {
 			cmdStr := fmt.Sprintf("systemctl --user status postgresql-%s.service", instanceName)
-			cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", cmdStr)
+			fullCmdStr := utils.BuildInstanceCmd(meta, cmdStr)
+			cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", fullCmdStr)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			_ = cmd.Run()
@@ -128,7 +129,7 @@ func manageService(action string, instanceName string) {
 	} else {
 		cmd := fmt.Sprintf("systemctl --user %s postgresql-%s.service", action, instanceName)
 		fmt.Printf("Executing: %s for instance '%s' as user '%s'...\n", action, instanceName, meta.User)
-		err = utils.RunAsUser(meta.User, cmd)
+		err = utils.RunAsUserForInstance(meta.User, meta, cmd)
 	}
 
 	if err != nil {

@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/text"
+
+	"pg_mgr/internal/config"
 )
 
 func PromptInput(label string, defaultVal string) string {
@@ -373,5 +375,89 @@ func GetPgMgrArchiveDir(confPath string) string {
 	}
 	return ExtractArchiveDirFromCmd(pgMgrPart)
 }
+
+func GetInstanceBinDir(meta config.InstanceMeta) string {
+	if meta.BinPath == "" {
+		return ""
+	}
+	binDir := meta.BinPath
+	fi, err := os.Stat(meta.BinPath)
+	if err == nil {
+		if !fi.IsDir() {
+			binDir = filepath.Dir(meta.BinPath)
+		}
+	} else {
+		base := filepath.Base(meta.BinPath)
+		if strings.Contains(base, ".") || base == "postgres" || base == "pg_ctl" || base == "pg_rman" || base == "psql" {
+			binDir = filepath.Dir(meta.BinPath)
+		}
+	}
+	return binDir
+}
+
+func GetPgrmanBin(meta config.InstanceMeta) string {
+	binDir := GetInstanceBinDir(meta)
+	if binDir != "" {
+		candidate := filepath.Join(binDir, "pg_rman")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "pg_rman"
+}
+
+func GetInstanceEnvPrefix(meta config.InstanceMeta) string {
+	var exports []string
+	binDir := GetInstanceBinDir(meta)
+	if binDir != "" {
+		exports = append(exports, fmt.Sprintf("export PATH=%s:$PATH", binDir))
+		versionDir := filepath.Dir(binDir)
+		libDir := filepath.Join(versionDir, "lib")
+		if _, err := os.Stat(libDir); err == nil {
+			exports = append(exports, fmt.Sprintf("export LD_LIBRARY_PATH=%s:$LD_LIBRARY_PATH", libDir))
+		} else if _, err2 := os.Stat(filepath.Join(binDir, "lib")); err2 == nil {
+			exports = append(exports, fmt.Sprintf("export LD_LIBRARY_PATH=%s:$LD_LIBRARY_PATH", filepath.Join(binDir, "lib")))
+		}
+		exports = append(exports, fmt.Sprintf("export PG_VERSION_PATH=%s", versionDir))
+	}
+	if meta.DataDir != "" {
+		exports = append(exports, fmt.Sprintf("export PGDATA=%s", meta.DataDir))
+	}
+	if meta.Port != "" {
+		exports = append(exports, fmt.Sprintf("export PGPORT=%s", meta.Port))
+	}
+	if meta.Pgrman != nil && meta.Pgrman.BackupDir != "" {
+		exports = append(exports, fmt.Sprintf("export PG_RMAN_BACK_PATH=%s", meta.Pgrman.BackupDir))
+	}
+	if len(exports) == 0 {
+		return ""
+	}
+	return strings.Join(exports, " && ")
+}
+
+func BuildInstanceCmd(meta config.InstanceMeta, rawCmdStr string) string {
+	prefix := GetInstanceEnvPrefix(meta)
+	if prefix == "" {
+		return rawCmdStr
+	}
+	return prefix + " && " + rawCmdStr
+}
+
+func RunAsUserForInstance(username string, meta config.InstanceMeta, cmdStr string) error {
+	if username == "" {
+		username = meta.User
+	}
+	fullCmd := BuildInstanceCmd(meta, cmdStr)
+	return RunAsUser(username, fullCmd)
+}
+
+func RunAsUserWithOutputForInstance(username string, meta config.InstanceMeta, cmdStr string) (string, error) {
+	if username == "" {
+		username = meta.User
+	}
+	fullCmd := BuildInstanceCmd(meta, cmdStr)
+	return RunAsUserWithOutput(username, fullCmd)
+}
+
 
 

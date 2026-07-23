@@ -64,7 +64,8 @@ func getVersionFromBinPath(baseDir, binPath, osUser string) (utils.PGVersion, er
 	}
 
 	// fallback: run postgres -V
-	out, err := utils.RunAsUserWithOutput(osUser, binPath+" -V")
+	meta := config.InstanceMeta{BinPath: binPath, User: osUser}
+	out, err := utils.RunAsUserWithOutputForInstance(osUser, meta, binPath+" -V")
 	if err == nil {
 		fields := strings.Fields(out)
 		for i, field := range fields {
@@ -376,8 +377,13 @@ func runUpgrade() {
 						pgrmanBin = getPgrmanBin(meta)
 					}
 
+					upgMeta := meta
+					upgMeta.DataDir = newDataDir
+					upgMeta.BinPath = filepath.Join(newBinDir, "postgres")
+
 					initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, oldBackupDir, newDataDir)
-					execCmd := exec.Command("su", "-s", "/bin/bash", "-", osUser, "-c", initCmdStr)
+					execCmdStr := utils.BuildInstanceCmd(upgMeta, initCmdStr)
+					execCmd := exec.Command("su", "-s", "/bin/bash", "-", osUser, "-c", execCmdStr)
 					out, err := execCmd.CombinedOutput()
 					if err != nil {
 						outStr := string(out)

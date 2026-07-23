@@ -149,13 +149,7 @@ func promptCron(label string, defaultVal string) string {
 }
 
 func getPgrmanBin(meta config.InstanceMeta) string {
-	if meta.BinPath != "" {
-		candidate := filepath.Join(meta.BinPath, "pg_rman")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-	return "pg_rman"
+	return utils.GetPgrmanBin(meta)
 }
 
 func runPgrmanInit() {
@@ -267,7 +261,8 @@ func runPgrmanInit() {
 	pgrmanBin := getPgrmanBin(meta)
 	initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)
 	fmt.Printf("Initializing pg_rman in directory: %s...\n", backupDir)
-	cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", initCmdStr)
+	execCmdStr := utils.BuildInstanceCmd(meta, initCmdStr)
+	cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		outStr := string(out)
@@ -406,7 +401,8 @@ func runPgrmanShow() {
 
 	pgrmanBin := getPgrmanBin(meta)
 	showCmdStr := fmt.Sprintf("%s show -B %s -D %s detail", pgrmanBin, meta.Pgrman.BackupDir, meta.DataDir)
-	cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", showCmdStr)
+	execCmdStr := utils.BuildInstanceCmd(meta, showCmdStr)
+	cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
@@ -474,7 +470,8 @@ func runPgrmanRun(cmd *cobra.Command) {
 		pgrmanBin, meta.Port, meta.DataDir, mode, meta.Pgrman.BackupDir, pgrmanBin, meta.Pgrman.BackupDir)
 
 	fmt.Printf("Running manual backup (mode: %s) for instance '%s' as user '%s'...\n", mode, instName, meta.User)
-	execCmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", runCmdStr)
+	execCmdStr := utils.BuildInstanceCmd(meta, runCmdStr)
+	execCmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
 	err := execCmd.Run()
@@ -684,7 +681,8 @@ func runPgrmanEdit(cmd *cobra.Command) {
 
 	pgrmanBin := getPgrmanBin(meta)
 	initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)
-	execCmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", initCmdStr)
+	execCmdStr := utils.BuildInstanceCmd(meta, initCmdStr)
+	execCmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
 	out, err := execCmd.CombinedOutput()
 	if err != nil {
 		outStr := string(out)

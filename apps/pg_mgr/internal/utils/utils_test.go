@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"pg_mgr/internal/config"
 )
 
 func TestUpdatePgrc(t *testing.T) {
@@ -172,5 +174,96 @@ func TestGetPgMgrArchiveDir(t *testing.T) {
 		t.Errorf("expected '/app/postgresql/archive/homedb', got '%s'", dir)
 	}
 }
+
+func TestGetInstanceBinDir(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "bin_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	binDir := filepath.Join(tempDir, "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	postgresFile := filepath.Join(binDir, "postgres")
+	_ = os.WriteFile(postgresFile, []byte("fake binary"), 0755)
+
+	meta1 := config.InstanceMeta{BinPath: postgresFile}
+	if got := GetInstanceBinDir(meta1); got != binDir {
+		t.Errorf("expected binDir '%s', got '%s'", binDir, got)
+	}
+
+	meta2 := config.InstanceMeta{BinPath: binDir}
+	if got := GetInstanceBinDir(meta2); got != binDir {
+		t.Errorf("expected binDir '%s', got '%s'", binDir, got)
+	}
+}
+
+func TestGetPgrmanBin(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pgrman_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	binDir := filepath.Join(tempDir, "bin")
+	_ = os.MkdirAll(binDir, 0755)
+	postgresFile := filepath.Join(binDir, "postgres")
+	pgrmanFile := filepath.Join(binDir, "pg_rman")
+	_ = os.WriteFile(postgresFile, []byte("fake postgres"), 0755)
+	_ = os.WriteFile(pgrmanFile, []byte("fake pg_rman"), 0755)
+
+	meta := config.InstanceMeta{BinPath: postgresFile}
+	if got := GetPgrmanBin(meta); got != pgrmanFile {
+		t.Errorf("expected pgrman path '%s', got '%s'", pgrmanFile, got)
+	}
+}
+
+func TestGetInstanceEnvPrefixAndBuildCmd(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "cmd_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	binDir := filepath.Join(tempDir, "16/9/bin")
+	libDir := filepath.Join(tempDir, "16/9/lib")
+	_ = os.MkdirAll(binDir, 0755)
+	_ = os.MkdirAll(libDir, 0755)
+	postgresFile := filepath.Join(binDir, "postgres")
+	_ = os.WriteFile(postgresFile, []byte("fake postgres"), 0755)
+
+	meta := config.InstanceMeta{
+		User:    "postgres",
+		DataDir: filepath.Join(tempDir, "instances/inst1"),
+		BinPath: postgresFile,
+		Port:    "5432",
+		Pgrman: &config.PgrmanConfig{
+			BackupDir: filepath.Join(tempDir, "backup/inst1"),
+		},
+	}
+
+	cmdStr := "pg_rman backup -B /backup"
+	built := BuildInstanceCmd(meta, cmdStr)
+
+	if !strings.Contains(built, "export PATH="+binDir+":$PATH") {
+		t.Errorf("expected PATH export, got: %s", built)
+	}
+	if !strings.Contains(built, "export LD_LIBRARY_PATH="+libDir+":$LD_LIBRARY_PATH") {
+		t.Errorf("expected LD_LIBRARY_PATH export, got: %s", built)
+	}
+	if !strings.Contains(built, "export PGDATA="+filepath.Join(tempDir, "instances/inst1")) {
+		t.Errorf("expected PGDATA export, got: %s", built)
+	}
+	if !strings.Contains(built, "export PGPORT=5432") {
+		t.Errorf("expected PGPORT export, got: %s", built)
+	}
+	if !strings.Contains(built, "export PG_RMAN_BACK_PATH="+filepath.Join(tempDir, "backup/inst1")) {
+		t.Errorf("expected PG_RMAN_BACK_PATH export, got: %s", built)
+	}
+	if !strings.HasSuffix(built, " && "+cmdStr) {
+		t.Errorf("expected command appended at end, got: %s", built)
+	}
+}
+
 
 
