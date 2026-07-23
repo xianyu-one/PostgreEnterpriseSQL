@@ -268,4 +268,9 @@ WantedBy=%s
 
 	os.WriteFile(svcPath, []byte(svcContent), 0644)
 	os.Chown(svcPath, uid, gid)
+	if osUser == "root" {
+		utils.RunCmd("systemctl", "daemon-reload")
+	} else {
+		utils.RunAsUser(osUser, "systemctl --user daemon-reload")
+	}
 }
