@@ -19,8 +19,8 @@ import (
 )
 
 var createInstanceCmd = &cobra.Command{
-	Use:     "create-instance",
-	Aliases: []string{"create"},
+	Use:     "create",
+	Aliases: []string{"create-instance"},
 	Short:   i18n.T("create_instance_desc"),
 	Run:     func(cmd *cobra.Command, args []string) { runCreateInstance() },
 }
@@ -34,14 +34,12 @@ func init() {
 	createInstanceCmd.Flags().StringVar(&Config.Password, "password", "SuperSecret123", "Initial password for postgres user")
 	createInstanceCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
 
+	InstanceCmd.AddCommand(createInstanceCmd)
 	RootCmd.AddCommand(createInstanceCmd)
 }
 
 func runCreateInstance() {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureUserPermission("postgres")
 
 	baseDir := config.Global.BaseDir
 	installed, err := utils.GetInstalledVersions(baseDir)

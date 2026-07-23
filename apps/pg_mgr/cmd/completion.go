@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/utils"
 )
 
 var completionCmd = &cobra.Command{
@@ -24,7 +25,8 @@ var compInstallCmd = &cobra.Command{
 }
 
 var compUninstallCmd = &cobra.Command{
-	Use:       "uninstall [bash|zsh]",
+	Use:       "remove [bash|zsh]",
+	Aliases:   []string{"uninstall"},
 	Short:     "Uninstall completion script",
 	Args:      cobra.ExactArgs(1),
 	ValidArgs: []string{"bash", "zsh"},
@@ -43,10 +45,7 @@ func handleCompletion(cmd *cobra.Command, args []string, action string) {
 	}
 	shell := args[0]
 
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureRoot()
 
 	var targetFile string
 	switch shell {

@@ -34,6 +34,18 @@ var RootCmd = &cobra.Command{
 	Version: Version,
 }
 
+var InstanceCmd = &cobra.Command{
+	Use:     "instance",
+	Aliases: []string{"inst"},
+	Short:   "Manage PostgreSQL database instances",
+}
+
+var PkgCmd = &cobra.Command{
+	Use:     "pkg",
+	Aliases: []string{"package"},
+	Short:   "Manage PostgreSQL software packages",
+}
+
 func Execute() {
 	if runtime.GOOS != "linux" {
 		fmt.Println(text.FgHiRed.Sprint("This tool is designed specifically for Linux OS."))
@@ -48,4 +60,7 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(config.InitConfig)
 	i18n.InitLang()
+
+	RootCmd.AddCommand(InstanceCmd)
+	RootCmd.AddCommand(PkgCmd)
 }

@@ -30,9 +30,10 @@ var daemonInstallCmd = &cobra.Command{
 }
 
 var daemonUninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: i18n.T("daemon_uninstall_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runDaemonUninstall() },
+	Use:     "remove",
+	Aliases: []string{"uninstall"},
+	Short:   i18n.T("daemon_uninstall_desc"),
+	Run:     func(cmd *cobra.Command, args []string) { runDaemonUninstall() },
 }
 
 var daemonStartCmd = &cobra.Command{
@@ -77,10 +78,7 @@ func init() {
 }
 
 var ensureRootFunc = func() {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureRoot()
 }
 
 func ensureRoot() {

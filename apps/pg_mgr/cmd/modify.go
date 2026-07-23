@@ -16,16 +16,26 @@ import (
 )
 
 var (
-	modifyPort      string
-	modifyBinPath   string
-	modifyDataDir   string
-	modifyOSUser    string
-	modifyCheckRoot = func() bool { return os.Geteuid() == 0 }
+	modifyPort          string
+	modifyBinPath       string
+	modifyDataDir       string
+	modifyOSUser        string
+	modifyCheckRoot     = func() bool { return utils.IsRoot() }
+	modifyCheckPermission = func(instanceName string) bool {
+		if modifyCheckRoot() {
+			return true
+		}
+		meta, ok := config.Global.Instances[instanceName]
+		if !ok {
+			return false
+		}
+		return utils.IsRootOrUser(meta.User)
+	}
 )
 
 var modifyCmd = &cobra.Command{
 	Use:     "modify [instance_name]",
-	Aliases: []string{"configure"},
+	Aliases: []string{"configure", "edit"},
 	Short:   i18n.T("modify_desc"),
 	Args:    cobra.ExactArgs(1),
 	Run:     func(cmd *cobra.Command, args []string) { runModify(args[0]) },
@@ -50,11 +60,16 @@ func init() {
 	modifyCmd.ValidArgsFunction = compFunc
 
 	RootCmd.AddCommand(modifyCmd)
+	InstanceCmd.AddCommand(modifyCmd)
 }
 
 func runModify(instanceName string) {
-	if !modifyCheckRoot() {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
+	if !modifyCheckPermission(instanceName) {
+		metaUser := "postgres"
+		if meta, ok := config.Global.Instances[instanceName]; ok {
+			metaUser = meta.User
+		}
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", metaUser)))
 		os.Exit(1)
 	}
 

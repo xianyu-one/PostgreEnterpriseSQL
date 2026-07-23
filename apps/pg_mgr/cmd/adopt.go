@@ -42,14 +42,12 @@ func init() {
 	adoptCmd.Flags().StringVarP(&adoptPort, "port", "p", "", "Port of the database instance")
 	adoptCmd.Flags().StringVarP(&adoptName, "name", "i", "", "Instance name")
 
+	InstanceCmd.AddCommand(adoptCmd)
 	RootCmd.AddCommand(adoptCmd)
 }
 
 func runAdopt() {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureRoot()
 
 	if adoptDataDir != "" {
 		adoptUnstarted(adoptDataDir, adoptOSUser, adoptBinPath, adoptPort, adoptName)

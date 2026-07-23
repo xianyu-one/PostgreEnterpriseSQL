@@ -19,6 +19,13 @@ import (
 )
 
 var installPkgCmd = &cobra.Command{
+	Use:     "install",
+	Aliases: []string{"install-pkg"},
+	Short:   i18n.T("install_pkg_desc"),
+	Run:     func(cmd *cobra.Command, args []string) { runInstallPkg(cmd) },
+}
+
+var installPkgLegacyCmd = &cobra.Command{
 	Use:   "install-pkg",
 	Short: i18n.T("install_pkg_desc"),
 	Run:   func(cmd *cobra.Command, args []string) { runInstallPkg(cmd) },
@@ -30,14 +37,17 @@ func init() {
 	installPkgCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", "Minor version path structure")
 	installPkgCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
 
-	RootCmd.AddCommand(installPkgCmd)
+	installPkgLegacyCmd.Flags().StringVarP(&Config.TarPath, "tar", "t", "postgresql-16.9-x64-Ubuntu24.04.tar.gz", "Path to the tar.gz package")
+	installPkgLegacyCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", "Major version path structure")
+	installPkgLegacyCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", "Minor version path structure")
+	installPkgLegacyCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
+
+	PkgCmd.AddCommand(installPkgCmd)
+	RootCmd.AddCommand(installPkgLegacyCmd)
 }
 
 func runInstallPkg(cmd *cobra.Command) {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureRoot()
 
 	if !Config.Silent {
 		Config.TarPath = utils.PromptInput(i18n.T("prompt_tar"), Config.TarPath)

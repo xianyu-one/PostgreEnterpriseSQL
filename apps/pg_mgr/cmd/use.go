@@ -33,6 +33,7 @@ func init() {
 		}
 		return list, cobra.ShellCompDirectiveNoFileComp
 	}
+	InstanceCmd.AddCommand(useCmd)
 	RootCmd.AddCommand(useCmd)
 }
 

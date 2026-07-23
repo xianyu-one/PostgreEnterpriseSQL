@@ -9,6 +9,7 @@ import (
 var translationMap = map[string]map[string]string{
 	"en": {
 		"req_root":                  "This program must be run as root (sudo).",
+		"req_root_or_user":          "This command requires root privileges (sudo) or running as instance user '%s'.",
 		"install_desc":              "Install and configure a new PostgreSQL instance.",
 		"uninstall_desc":            "Uninstall and clean up a PostgreSQL instance.",
 		"comp_desc":                 "Install or uninstall bash/zsh auto-completion.",
@@ -219,6 +220,7 @@ var translationMap = map[string]map[string]string{
 	},
 	"zh-CN": {
 		"req_root":                  "此程序必须以 root 权限运行 (sudo)。",
+		"req_root_or_user":          "此命令必须以 root 权限 (sudo) 或实例运行用户 '%s' 身份运行。",
 		"install_desc":              "安装并配置一个新的 PostgreSQL 实例。",
 		"uninstall_desc":            "卸载并清理一个 PostgreSQL 实例。",
 		"comp_desc":                 "安装或卸载 bash/zsh 自动补全脚本。",

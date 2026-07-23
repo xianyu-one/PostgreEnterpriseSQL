@@ -68,6 +68,16 @@ func RunCmd(name string, args ...string) error {
 }
 
 func RunAsUser(username string, cmdStr string) error {
+	currUser, err := GetCurrentOSUser()
+	if err == nil && currUser == username {
+		cmd := exec.Command("bash", "-c", cmdStr)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%v: %s", err, stderr.String())
+		}
+		return nil
+	}
 	// Use -s /bin/bash to ensure execution works even if the user has /bin/false or /usr/sbin/nologin
 	cmd := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr)
 	var stderr bytes.Buffer
@@ -79,6 +89,12 @@ func RunAsUser(username string, cmdStr string) error {
 }
 
 func RunAsUserWithOutput(username string, cmdStr string) (string, error) {
+	currUser, err := GetCurrentOSUser()
+	if err == nil && currUser == username {
+		cmd := exec.Command("bash", "-c", cmdStr)
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
+	}
 	cmd := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err

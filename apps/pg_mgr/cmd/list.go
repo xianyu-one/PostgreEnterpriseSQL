@@ -24,14 +24,17 @@ var listCmd = &cobra.Command{
 }
 
 var listVersionsCmd = &cobra.Command{
-	Use:   "versions",
-	Short: i18n.T("list_versions_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runListVersions() },
+	Use:     "list",
+	Aliases: []string{"versions"},
+	Short:   i18n.T("list_versions_desc"),
+	Run:     func(cmd *cobra.Command, args []string) { runListVersions() },
 }
 
 func init() {
 	listCmd.AddCommand(listVersionsCmd)
 	RootCmd.AddCommand(listCmd)
+	InstanceCmd.AddCommand(listCmd)
+	PkgCmd.AddCommand(listVersionsCmd)
 }
 
 func runListVersions() {

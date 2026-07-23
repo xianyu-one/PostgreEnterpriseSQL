@@ -16,9 +16,10 @@ import (
 )
 
 var uninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: i18n.T("uninstall_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runUninstall() },
+	Use:     "remove",
+	Aliases: []string{"remove-instance", "uninstall"},
+	Short:   i18n.T("uninstall_desc"),
+	Run:     func(cmd *cobra.Command, args []string) { runUninstall() },
 }
 
 func init() {
@@ -32,14 +33,12 @@ func init() {
 	})
 	uninstallCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
 
+	InstanceCmd.AddCommand(uninstallCmd)
 	RootCmd.AddCommand(uninstallCmd)
 }
 
 func runUninstall() {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureInstancePermission(Config.InstanceName)
 
 	if !Config.Silent {
 		Config.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), Config.InstanceName)

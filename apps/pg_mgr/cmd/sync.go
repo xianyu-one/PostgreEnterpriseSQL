@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	checkRoot       = func() bool { return os.Geteuid() == 0 }
+	checkRoot       = func() bool { return utils.IsRoot() }
 	findPgProcesses = process.FindPgProcesses
 )
 
@@ -32,6 +32,7 @@ var syncCmd = &cobra.Command{
 }
 
 func init() {
+	InstanceCmd.AddCommand(syncCmd)
 	RootCmd.AddCommand(syncCmd)
 }
 

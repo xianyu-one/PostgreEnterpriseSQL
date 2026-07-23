@@ -83,6 +83,7 @@ func init() {
 	disableCmd.ValidArgsFunction = compFunc
 
 	RootCmd.AddCommand(startCmd, stopCmd, restartCmd, reloadCmd, statusCmd, enableCmd, disableCmd)
+	InstanceCmd.AddCommand(startCmd, stopCmd, restartCmd, reloadCmd, statusCmd, enableCmd, disableCmd)
 }
 
 func runServiceCmd(action string, args []string) {
@@ -94,10 +95,7 @@ func runServiceCmd(action string, args []string) {
 }
 
 func manageService(action string, instanceName string) {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureInstancePermission(instanceName)
 
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
@@ -114,7 +112,13 @@ func manageService(action string, instanceName string) {
 		} else {
 			cmdStr := fmt.Sprintf("systemctl --user status postgresql-%s.service", instanceName)
 			fullCmdStr := utils.BuildInstanceCmd(meta, cmdStr)
-			cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", fullCmdStr)
+			currUser, err := utils.GetCurrentOSUser()
+			var cmd *exec.Cmd
+			if err == nil && currUser == meta.User {
+				cmd = exec.Command("bash", "-c", fullCmdStr)
+			} else {
+				cmd = exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", fullCmdStr)
+			}
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			_ = cmd.Run()

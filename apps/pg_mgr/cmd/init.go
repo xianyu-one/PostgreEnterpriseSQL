@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -24,10 +23,7 @@ func init() {
 }
 
 func runInit() {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureRoot()
 
 	baseDir := utils.PromptInput(i18n.T("prompt_global_base"), config.Global.BaseDir)
 	logDir := utils.PromptInput(i18n.T("prompt_global_log_dir"), config.Global.LogDir)

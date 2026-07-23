@@ -32,8 +32,9 @@ var archiveCmd = &cobra.Command{
 }
 
 var archiveStatusCmd = &cobra.Command{
-	Use:   "status [instance_name]",
-	Short: i18n.T("archive_status_desc"),
+	Use:     "show [instance_name]",
+	Aliases: []string{"status"},
+	Short:   i18n.T("archive_status_desc"),
 	Run: func(cmd *cobra.Command, args []string) {
 		inst := archiveInstance
 		if len(args) > 0 {
@@ -68,8 +69,9 @@ var archiveDisableCmd = &cobra.Command{
 }
 
 var archiveSetCmd = &cobra.Command{
-	Use:   "set [instance_name]",
-	Short: i18n.T("archive_set_desc"),
+	Use:     "set [instance_name]",
+	Aliases: []string{"modify"},
+	Short:   i18n.T("archive_set_desc"),
 	Run: func(cmd *cobra.Command, args []string) {
 		inst := archiveInstance
 		if len(args) > 0 {
@@ -161,11 +163,6 @@ func runArchiveStatus(instanceName string) {
 }
 
 func runArchiveEnable(instanceName string) {
-	if !archiveCheckRoot() {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
-
 	if instanceName == "" {
 		if !archiveSilent {
 			instanceName = utils.PromptInput(i18n.T("prompt_inst"), "default")
@@ -177,6 +174,11 @@ func runArchiveEnable(instanceName string) {
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", instanceName)))
+		os.Exit(1)
+	}
+
+	if !archiveCheckRoot() && !utils.IsRootOrUser(meta.User) {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", meta.User)))
 		os.Exit(1)
 	}
 
@@ -269,11 +271,6 @@ func runArchiveEnable(instanceName string) {
 }
 
 func runArchiveDisable(instanceName string) {
-	if !archiveCheckRoot() {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
-
 	if instanceName == "" {
 		if !archiveSilent {
 			instanceName = utils.PromptInput(i18n.T("prompt_inst"), "default")
@@ -285,6 +282,11 @@ func runArchiveDisable(instanceName string) {
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", instanceName)))
+		os.Exit(1)
+	}
+
+	if !archiveCheckRoot() && !utils.IsRootOrUser(meta.User) {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", meta.User)))
 		os.Exit(1)
 	}
 

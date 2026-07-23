@@ -19,9 +19,10 @@ import (
 )
 
 var installCmd = &cobra.Command{
-	Use:   "install",
-	Short: i18n.T("install_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runInstall(cmd) },
+	Use:     "deploy",
+	Aliases: []string{"install"},
+	Short:   i18n.T("install_desc"),
+	Run:     func(cmd *cobra.Command, args []string) { runInstall(cmd) },
 }
 
 func init() {
@@ -35,13 +36,11 @@ func init() {
 	installCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
 
 	RootCmd.AddCommand(installCmd)
+	InstanceCmd.AddCommand(installCmd)
 }
 
 func runInstall(cmd *cobra.Command) {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
+	utils.EnsureRoot()
 
 	baseDir := config.Global.BaseDir
 	installed, err := utils.GetInstalledVersions(baseDir)

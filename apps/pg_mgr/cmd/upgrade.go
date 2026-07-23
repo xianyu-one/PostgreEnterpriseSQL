@@ -46,6 +46,7 @@ func init() {
 	upgradeCmd.Flags().StringVarP(&UpgConfig.TargetVersion, "target-version", "t", "", "Target version to upgrade to (e.g., 16.10)")
 	upgradeCmd.Flags().BoolVarP(&UpgConfig.Silent, "silent", "s", false, "Run in silent mode without prompts")
 
+	InstanceCmd.AddCommand(upgradeCmd)
 	RootCmd.AddCommand(upgradeCmd)
 }
 
@@ -87,14 +88,11 @@ func getVersionFromBinPath(baseDir, binPath, osUser string) (utils.PGVersion, er
 }
 
 func runUpgrade() {
-	if os.Geteuid() != 0 {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
-	}
-
 	if !UpgConfig.Silent {
 		UpgConfig.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), UpgConfig.InstanceName)
 	}
+
+	utils.EnsureInstancePermission(UpgConfig.InstanceName)
 
 	meta, ok := config.Global.Instances[UpgConfig.InstanceName]
 	if !ok {

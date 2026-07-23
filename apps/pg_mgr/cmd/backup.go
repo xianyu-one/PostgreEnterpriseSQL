@@ -50,15 +50,15 @@ var pgrmanInitCmd = &cobra.Command{
 }
 
 var pgrmanEditCmd = &cobra.Command{
-	Use:     "edit",
-	Aliases: []string{"modify", "set"},
+	Use:     "modify",
+	Aliases: []string{"edit", "set"},
 	Short:   i18n.T("pgrman_edit_desc"),
 	Run:     func(cmd *cobra.Command, args []string) { runPgrmanEdit(cmd) },
 }
 
 var pgrmanUninitCmd = &cobra.Command{
-	Use:     "uninit",
-	Aliases: []string{"clean"},
+	Use:     "remove",
+	Aliases: []string{"uninit", "clean"},
 	Short:   i18n.T("pgrman_uninit_desc"),
 	Run:     func(cmd *cobra.Command, args []string) { runPgrmanUninit() },
 }
@@ -111,7 +111,7 @@ func init() {
 	pgrmanEditCmd.RegisterFlagCompletionFunc("instance", compFunc)
 
 	pgrmanCmd.AddCommand(pgrmanInitCmd, pgrmanUninitCmd, pgrmanEditCmd, pgrmanShowCmd, pgrmanRunCmd)
-	backupCmd.AddCommand(pgrmanCmd, backupListCmd)
+	backupCmd.AddCommand(pgrmanCmd, backupListCmd, pgrmanInitCmd, pgrmanUninitCmd, pgrmanEditCmd, pgrmanShowCmd, pgrmanRunCmd)
 	RootCmd.AddCommand(backupCmd)
 }
 
@@ -152,9 +152,19 @@ func getPgrmanBin(meta config.InstanceMeta) string {
 	return utils.GetPgrmanBin(meta)
 }
 
-func runPgrmanInit() {
+func ensureInstancePermission(instName string) {
+	if utils.IsRoot() {
+		return
+	}
+	if meta, ok := config.Global.Instances[instName]; ok {
+		if utils.IsRootOrUser(meta.User) {
+			return
+		}
+	}
 	ensureRoot()
+}
 
+func runPgrmanInit() {
 	if len(config.Global.Instances) == 0 {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_instances")))
 		os.Exit(1)
@@ -174,6 +184,7 @@ func runPgrmanInit() {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", selectedInst)))
 		os.Exit(1)
 	}
+	ensureInstancePermission(selectedInst)
 
 	// Default values
 	defaultBackupDir := filepath.Join(config.Global.BaseDir, "backup", selectedInst)
@@ -310,8 +321,6 @@ func runPgrmanInit() {
 }
 
 func runPgrmanUninit() {
-	ensureRoot()
-
 	var configured []string
 	for name, meta := range config.Global.Instances {
 		if meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman" {
@@ -335,6 +344,7 @@ func runPgrmanUninit() {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_backup_config", selectedInst)))
 		os.Exit(1)
 	}
+	ensureInstancePermission(selectedInst)
 
 	backupDir := meta.Pgrman.BackupDir
 
@@ -372,8 +382,6 @@ func runPgrmanUninit() {
 }
 
 func runPgrmanShow() {
-	ensureRoot()
-
 	instName := pgrmanInstance
 	if instName == "" {
 		var configured []string
@@ -398,11 +406,18 @@ func runPgrmanShow() {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_backup_config", instName)))
 		os.Exit(1)
 	}
+	ensureInstancePermission(instName)
 
 	pgrmanBin := getPgrmanBin(meta)
 	showCmdStr := fmt.Sprintf("%s show -B %s -D %s detail", pgrmanBin, meta.Pgrman.BackupDir, meta.DataDir)
 	execCmdStr := utils.BuildInstanceCmd(meta, showCmdStr)
-	cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
+	currUser, _ := utils.GetCurrentOSUser()
+	var cmd *exec.Cmd
+	if currUser == meta.User {
+		cmd = exec.Command("bash", "-c", execCmdStr)
+	} else {
+		cmd = exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
@@ -412,8 +427,6 @@ func runPgrmanShow() {
 }
 
 func runPgrmanRun(cmd *cobra.Command) {
-	ensureRoot()
-
 	instName := pgrmanInstance
 	if instName == "" {
 		var configured []string
@@ -438,6 +451,7 @@ func runPgrmanRun(cmd *cobra.Command) {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_backup_config", instName)))
 		os.Exit(1)
 	}
+	ensureInstancePermission(instName)
 
 	var mode string
 	if cmd != nil && cmd.Flags().Changed("mode") {
@@ -471,7 +485,13 @@ func runPgrmanRun(cmd *cobra.Command) {
 
 	fmt.Printf("Running manual backup (mode: %s) for instance '%s' as user '%s'...\n", mode, instName, meta.User)
 	execCmdStr := utils.BuildInstanceCmd(meta, runCmdStr)
-	execCmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
+	currUser, _ := utils.GetCurrentOSUser()
+	var execCmd *exec.Cmd
+	if currUser == meta.User {
+		execCmd = exec.Command("bash", "-c", execCmdStr)
+	} else {
+		execCmd = exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
+	}
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
 	err := execCmd.Run()
@@ -483,8 +503,6 @@ func runPgrmanRun(cmd *cobra.Command) {
 }
 
 func runBackupList() {
-	ensureRoot()
-
 	out, _ := exec.Command("systemctl", "is-active", "pg_mgr.service").Output()
 	statusStr := strings.TrimSpace(string(out))
 	if statusStr == "" {
