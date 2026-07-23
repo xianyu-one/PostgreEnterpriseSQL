@@ -31,7 +31,9 @@ var (
 	pgrmanEditKeepData  int
 	pgrmanEditFullCron  string
 	pgrmanEditIncrCron  string
+	pgrmanEditMigrate   bool
 )
+
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
@@ -97,6 +99,8 @@ func init() {
 	pgrmanEditCmd.Flags().IntVar(&pgrmanEditKeepData, "keep-data-days", 0, "Retention days for backup data (KEEP_DATA_DAYS)")
 	pgrmanEditCmd.Flags().StringVar(&pgrmanEditFullCron, "full-cron", "", "Full backup Crontab schedule")
 	pgrmanEditCmd.Flags().StringVar(&pgrmanEditIncrCron, "incr-cron", "", "Incremental backup Crontab schedule")
+	pgrmanEditCmd.Flags().BoolVarP(&pgrmanEditMigrate, "migrate", "m", false, "Migrate existing backup files to the new directory")
+
 
 	// Autocomplete for instance flag
 	compFunc := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -675,7 +679,30 @@ func runPgrmanEdit(cmd *cobra.Command) {
 		incrCron = promptCron(i18n.T("prompt_incr_cron"), incrCron)
 	}
 
+	newBackupDir := filepath.Clean(backupDir)
+	oldBackupDirClean := filepath.Clean(bk.BackupDir)
+
+	if oldBackupDirClean != "" && newBackupDir != oldBackupDirClean {
+		doMigrate := pgrmanEditMigrate
+		if !doMigrate && !hasFlags {
+			if _, err := os.Stat(oldBackupDirClean); err == nil {
+				doMigrate = utils.PromptConfirm(i18n.T("prompt_migrate_backup", oldBackupDirClean, newBackupDir))
+			}
+		}
+
+		if doMigrate {
+			fmt.Printf("Migrating backup directory from %s to %s...\n", oldBackupDirClean, newBackupDir)
+			if err := utils.MigrateDirectory(oldBackupDirClean, newBackupDir); err != nil {
+				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_backup_failed", err)))
+			} else {
+				fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_backup_success", oldBackupDirClean, newBackupDir)))
+			}
+		}
+	}
+	backupDir = newBackupDir
+
 	u, err := user.Lookup(meta.User)
+
 	if err != nil {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
 		os.Exit(1)
@@ -688,14 +715,15 @@ func runPgrmanEdit(cmd *cobra.Command) {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
 		os.Exit(1)
 	}
-	_ = os.Chown(backupDir, uid, gid)
-
-	err = os.MkdirAll(arcLogPath, 0755)
-	if err != nil {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-		os.Exit(1)
+	if arcLogPath != "" {
+		err = os.MkdirAll(arcLogPath, 0755)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+			os.Exit(1)
+		}
+		_ = os.Chown(arcLogPath, uid, gid)
 	}
-	_ = os.Chown(arcLogPath, uid, gid)
+
 
 	pgrmanBin := getPgrmanBin(meta)
 	initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)

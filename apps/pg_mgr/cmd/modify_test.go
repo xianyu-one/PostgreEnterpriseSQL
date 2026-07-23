@@ -152,3 +152,64 @@ func TestModifyInstanceOSUser(t *testing.T) {
 		t.Errorf("expected user %s, got %s", currUser.Username, meta.User)
 	}
 }
+
+func TestModifyInstanceDataDirMigration(t *testing.T) {
+	oldCheck := modifyCheckRoot
+	modifyCheckRoot = func() bool { return true }
+	defer func() { modifyCheckRoot = oldCheck }()
+
+	currUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "pg_mgr_modify_mig_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	oldDataDir := filepath.Join(tempDir, "old_data")
+	newDataDir := filepath.Join(tempDir, "new_data")
+	_ = os.MkdirAll(oldDataDir, 0755)
+	_ = os.WriteFile(filepath.Join(oldDataDir, "postgresql.conf"), []byte("port = 5432\n"), 0644)
+
+	configPath := filepath.Join(tempDir, "conf.yaml")
+	config.ConfigFilePath = configPath
+	defer func() { config.ConfigFilePath = "/etc/pg_mgr/conf.yaml" }()
+
+	config.Global.Instances = make(map[string]config.InstanceMeta)
+	config.Global.Instances["mig-inst"] = config.InstanceMeta{
+		User:    currUser.Username,
+		DataDir: oldDataDir,
+		BinPath: "/usr/bin/postgres",
+		Port:    "5432",
+	}
+
+	modifyPort = ""
+	modifyBinPath = ""
+	modifyDataDir = newDataDir
+	modifyOSUser = ""
+	modifyMigrate = true
+	defer func() {
+		modifyDataDir = ""
+		modifyMigrate = false
+	}()
+
+	runModify("mig-inst")
+
+	meta, exists := config.Global.Instances["mig-inst"]
+	if !exists {
+		t.Fatalf("instance not found in registry")
+	}
+	if meta.DataDir != newDataDir {
+		t.Errorf("expected DataDir in registry to be %s, got %s", newDataDir, meta.DataDir)
+	}
+	if _, err := os.Stat(oldDataDir); !os.IsNotExist(err) {
+		t.Errorf("expected oldDataDir to be migrated/removed")
+	}
+	if _, err := os.Stat(filepath.Join(newDataDir, "postgresql.conf")); err != nil {
+		t.Errorf("expected postgresql.conf to exist in newDataDir")
+	}
+}
+

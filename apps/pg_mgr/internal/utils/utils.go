@@ -475,5 +475,50 @@ func RunAsUserWithOutputForInstance(username string, meta config.InstanceMeta, c
 	return RunAsUserWithOutput(username, fullCmd)
 }
 
+// MigrateDirectory moves or copies directory contents from oldDir to newDir.
+func MigrateDirectory(oldDir, newDir string) error {
+	oldDir = filepath.Clean(oldDir)
+	newDir = filepath.Clean(newDir)
+
+	if oldDir == newDir || oldDir == "" || newDir == "" {
+		return nil
+	}
+
+	fi, err := os.Stat(oldDir)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("source directory '%s' does not exist", oldDir)
+	} else if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("source '%s' is not a directory", oldDir)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(newDir), 0755); err != nil {
+		return fmt.Errorf("failed to create parent directory for '%s': %v", newDir, err)
+	}
+
+	err = os.Rename(oldDir, newDir)
+	if err == nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory '%s': %v", newDir, err)
+	}
+
+	cpCmd := fmt.Sprintf("cp -a %s/. %s/", oldDir, newDir)
+	if err := RunCmd("bash", "-c", cpCmd); err != nil {
+		return fmt.Errorf("failed to copy files from '%s' to '%s': %v", oldDir, newDir, err)
+	}
+
+	if err := os.RemoveAll(oldDir); err != nil {
+		fmt.Printf("Warning: failed to remove old directory '%s': %v\n", oldDir, err)
+	}
+
+	return nil
+}
+
+
 
 

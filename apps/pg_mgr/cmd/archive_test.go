@@ -108,3 +108,67 @@ func TestArchiveManagement(t *testing.T) {
 		t.Errorf("expected pgMgrPart to be empty after disable, got '%s'", pgMgrPart3)
 	}
 }
+
+func TestArchiveMigration(t *testing.T) {
+	oldCheck := archiveCheckRoot
+	archiveCheckRoot = func() bool { return true }
+	defer func() { archiveCheckRoot = oldCheck }()
+
+	currUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "pg_mgr_archive_mig_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dataDir := filepath.Join(tempDir, "data")
+	oldArcDir := filepath.Join(tempDir, "old_arc")
+	newArcDir := filepath.Join(tempDir, "new_arc")
+	_ = os.MkdirAll(dataDir, 0755)
+	_ = os.MkdirAll(oldArcDir, 0755)
+
+	walFile := filepath.Join(oldArcDir, "000000010000000000000001")
+	_ = os.WriteFile(walFile, []byte("wal content"), 0644)
+
+	confPath := filepath.Join(dataDir, "postgresql.conf")
+	initialConf := "archive_mode = on\narchive_command = 'true PG_MGR_ARCHIVE_START ; export PG_ARCHDIR=" + oldArcDir + " && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f && true PG_MGR_ARCHIVE_END'\n"
+	_ = os.WriteFile(confPath, []byte(initialConf), 0644)
+
+	configPath := filepath.Join(tempDir, "conf.yaml")
+	config.ConfigFilePath = configPath
+	defer func() { config.ConfigFilePath = "/etc/pg_mgr/conf.yaml" }()
+
+	config.Global.Instances = make(map[string]config.InstanceMeta)
+	config.Global.Instances["arc-inst"] = config.InstanceMeta{
+		User:    currUser.Username,
+		DataDir: dataDir,
+		BinPath: "/usr/bin/postgres",
+		Port:    "5432",
+	}
+
+	archiveDir = newArcDir
+	archiveCommand = ""
+	archiveSilent = true
+	archiveMigrate = true
+	defer func() {
+		archiveDir = ""
+		archiveSilent = false
+		archiveMigrate = false
+	}()
+
+	runArchiveEnable("arc-inst")
+
+	if _, err := os.Stat(oldArcDir); !os.IsNotExist(err) {
+		t.Errorf("expected old archive directory to be migrated/removed")
+	}
+
+	migratedWal := filepath.Join(newArcDir, "000000010000000000000001")
+	if content, err := os.ReadFile(migratedWal); err != nil || string(content) != "wal content" {
+		t.Errorf("expected WAL file to exist in new archive directory with correct content")
+	}
+}
+

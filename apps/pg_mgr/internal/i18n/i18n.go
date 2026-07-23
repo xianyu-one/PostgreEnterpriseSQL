@@ -217,6 +217,15 @@ var translationMap = map[string]map[string]string{
 		"upgrade_collation_notice":  "\n[NOTICE] Database upgrade completed. Please inspect all databases and execute the following SQL statement in each database to refresh collation versions if needed:\n  ALTER DATABASE <dbname> REFRESH COLLATION VERSION;",
 		"archive_process_terminated": "Restarted archiver process (executed SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';) to apply configuration.",
 		"archive_check_notice":      "\n[NOTICE] Please connect to the database (e.g. psql -p %s) and verify the active archive command using:\n  SELECT setting FROM pg_settings WHERE name = 'archive_command';\n  (or: SHOW archive_command;)\nIf the old command is still shown, execute:\n  SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';",
+		"err_migrate_data_failed":    "Failed to migrate data directory: %v",
+		"migrate_data_success":       "Successfully migrated data directory from '%s' to '%s'.",
+		"err_migrate_archive_failed": "Failed to migrate archive directory: %v",
+		"migrate_archive_success":    "Successfully migrated archive directory from '%s' to '%s'.",
+		"err_migrate_backup_failed":  "Failed to migrate backup directory: %v",
+		"migrate_backup_success":     "Successfully migrated backup directory from '%s' to '%s'.",
+		"prompt_migrate_archive":     "Do you want to migrate existing WAL archive files from '%s' to '%s'? (y/N)",
+		"prompt_migrate_backup":      "Do you want to migrate existing backup data from '%s' to '%s'? (y/N)",
+		"prompt_migrate_data":        "Do you want to migrate existing data directory from '%s' to '%s'? (y/N)",
 	},
 	"zh-CN": {
 		"req_root":                  "此程序必须以 root 权限运行 (sudo)。",
@@ -428,10 +437,20 @@ var translationMap = map[string]map[string]string{
 		"upgrade_collation_notice":  "\n【提示】数据库升级成功！请检查各个数据库，为防止排序规则版本不匹配 (Collation Version Mismatch) 的警告，请及时登录各数据库并执行：\n  ALTER DATABASE <数据库名> REFRESH COLLATION VERSION;",
 		"archive_process_terminated": "已重启归档进程 (已执行 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';)，以确保新归档命令生效。",
 		"archive_check_notice":      "\n【提示】请登录数据库 (例如 psql -p %s) 并通过 SELECT 语句核对数据库进程当前实际生效的归档命令：\n  SELECT setting FROM pg_settings WHERE name = 'archive_command';\n  (或执行: SHOW archive_command;)\n如查看到仍为旧命令，可再次在数据库中执行以下命令强制重启归档进程：\n  SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';",
+		"err_migrate_data_failed":    "迁移数据目录失败: %v",
+		"migrate_data_success":       "已成功将数据目录从 '%s' 迁移至 '%s'。",
+		"err_migrate_archive_failed": "迁移归档目录失败: %v",
+		"migrate_archive_success":    "已成功将归档目录从 '%s' 迁移至 '%s'。",
+		"err_migrate_backup_failed":  "迁移备份目录失败: %v",
+		"migrate_backup_success":     "已成功将备份目录从 '%s' 迁移至 '%s'。",
+		"prompt_migrate_archive":     "是否将现有的 WAL 归档文件从 '%s' 迁移至 '%s'？(y/N)",
+		"prompt_migrate_backup":      "是否将现有的备份数据从 '%s' 迁移至 '%s'？(y/N)",
+		"prompt_migrate_data":        "是否将现有的数据目录从 '%s' 迁移至 '%s'？(y/N)",
 	},
 }
 
 var currentLang = "en"
+
 
 func init() {
 	InitLang()

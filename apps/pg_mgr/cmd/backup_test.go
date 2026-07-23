@@ -174,3 +174,68 @@ func TestRunPgrmanEditFlags(t *testing.T) {
 	}
 }
 
+func TestRunPgrmanEditMigration(t *testing.T) {
+	oldRootCheck := ensureRootFunc
+	ensureRootFunc = func() {}
+	defer func() { ensureRootFunc = oldRootCheck }()
+
+	tempDir, err := os.MkdirTemp("", "pg_mgr_edit_mig_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	configPath := filepath.Join(tempDir, "conf.yaml")
+	config.ConfigFilePath = configPath
+	defer func() { config.ConfigFilePath = "/etc/pg_mgr/conf.yaml" }()
+
+	oldBackupDir := filepath.Join(tempDir, "old_backup")
+	newBackupDir := filepath.Join(tempDir, "new_backup")
+	_ = os.MkdirAll(oldBackupDir, 0755)
+	_ = os.WriteFile(filepath.Join(oldBackupDir, "backup.ini"), []byte("backup_mode=FULL"), 0644)
+
+	currentOSUser := "root"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		currentOSUser = u.Username
+	}
+
+	config.Global.Instances = map[string]config.InstanceMeta{
+		"inst1": {
+			User:    currentOSUser,
+			DataDir: filepath.Join(tempDir, "inst1"),
+			Port:    "5432",
+			Pgrman: &config.PgrmanConfig{
+				Tool:      "pgrman",
+				BackupDir: oldBackupDir,
+			},
+		},
+	}
+
+	pgrmanInstance = "inst1"
+	pgrmanEditBackupDir = newBackupDir
+	pgrmanEditMigrate = true
+
+	cmd := pgrmanEditCmd
+	_ = cmd.Flags().Set("instance", "inst1")
+	_ = cmd.Flags().Set("backup-dir", newBackupDir)
+	_ = cmd.Flags().Set("migrate", "true")
+
+	defer func() {
+		pgrmanInstance = ""
+		pgrmanEditBackupDir = ""
+		pgrmanEditMigrate = false
+	}()
+
+	runPgrmanEdit(cmd)
+
+	if _, err := os.Stat(oldBackupDir); !os.IsNotExist(err) {
+		t.Errorf("expected oldBackupDir to be migrated/removed")
+	}
+
+	migratedFile := filepath.Join(newBackupDir, "backup.ini")
+	if content, err := os.ReadFile(migratedFile); err != nil || string(content) != "backup_mode=FULL" {
+		t.Errorf("expected backup.ini to be migrated to new backup directory")
+	}
+}
+
+

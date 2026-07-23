@@ -265,5 +265,42 @@ func TestGetInstanceEnvPrefixAndBuildCmd(t *testing.T) {
 	}
 }
 
+func TestMigrateDirectory(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "migrate_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	oldDir := filepath.Join(tempDir, "old_data")
+	newDir := filepath.Join(tempDir, "new_data")
+
+	_ = os.MkdirAll(filepath.Join(oldDir, "subdir"), 0755)
+	file1 := filepath.Join(oldDir, "file1.txt")
+	file2 := filepath.Join(oldDir, "subdir", "file2.txt")
+	_ = os.WriteFile(file1, []byte("hello"), 0644)
+	_ = os.WriteFile(file2, []byte("world"), 0644)
+
+	err = MigrateDirectory(oldDir, newDir)
+	if err != nil {
+		t.Fatalf("MigrateDirectory failed: %v", err)
+	}
+
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Errorf("expected oldDir to be removed, but it still exists")
+	}
+
+	newFile1 := filepath.Join(newDir, "file1.txt")
+	newFile2 := filepath.Join(newDir, "subdir", "file2.txt")
+
+	if content, err := os.ReadFile(newFile1); err != nil || string(content) != "hello" {
+		t.Errorf("expected newFile1 content 'hello', got '%s', err: %v", string(content), err)
+	}
+	if content, err := os.ReadFile(newFile2); err != nil || string(content) != "world" {
+		t.Errorf("expected newFile2 content 'world', got '%s', err: %v", string(content), err)
+	}
+}
+
+
 
 

@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
@@ -16,11 +17,12 @@ import (
 )
 
 var (
-	modifyPort          string
-	modifyBinPath       string
-	modifyDataDir       string
-	modifyOSUser        string
-	modifyCheckRoot     = func() bool { return utils.IsRoot() }
+	modifyPort             string
+	modifyBinPath          string
+	modifyDataDir          string
+	modifyOSUser           string
+	modifyMigrate          bool
+	modifyCheckRoot        = func() bool { return utils.IsRoot() }
 	modifyCheckPermission = func(instanceName string) bool {
 		if modifyCheckRoot() {
 			return true
@@ -46,6 +48,7 @@ func init() {
 	modifyCmd.Flags().StringVarP(&modifyBinPath, "bin-path", "b", "", "New path to the postgres binary")
 	modifyCmd.Flags().StringVarP(&modifyDataDir, "data-dir", "d", "", "New data directory for the instance")
 	modifyCmd.Flags().StringVarP(&modifyOSUser, "os-user", "u", "", "New OS user who runs the database instance")
+	modifyCmd.Flags().BoolVarP(&modifyMigrate, "migrate", "m", false, "Migrate existing data directory to the new location")
 
 	compFunc := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {
@@ -92,6 +95,7 @@ func runModify(instanceName string) {
 	if modifyBinPath != "" {
 		newBinPath = modifyBinPath
 	}
+	oldDataDir := meta.DataDir
 	newDataDir := meta.DataDir
 	if modifyDataDir != "" {
 		newDataDir = filepath.Clean(modifyDataDir)
@@ -127,9 +131,28 @@ func runModify(instanceName string) {
 		}
 	}
 
+	// Data Directory Migration if requested
+	if modifyDataDir != "" && newDataDir != oldDataDir && modifyMigrate {
+		if isActive && !restartNeeded {
+			stopOldService(instanceName, meta.User)
+		}
+		fmt.Printf("Migrating data directory from %s to %s...\n", oldDataDir, newDataDir)
+		if err := utils.MigrateDirectory(oldDataDir, newDataDir); err != nil {
+			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_data_failed", err)))
+			os.Exit(1)
+		}
+		fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_data_success", oldDataDir, newDataDir)))
+
+		if meta.Pgrman != nil && meta.Pgrman.SrvLogPath != "" {
+			if rel, err := filepath.Rel(oldDataDir, meta.Pgrman.SrvLogPath); err == nil && !strings.HasPrefix(rel, "..") {
+				meta.Pgrman.SrvLogPath = filepath.Join(newDataDir, rel)
+			}
+		}
+	}
+
 	// Update postgresql.conf if port changed
 	if modifyPort != "" {
-		confPath := filepath.Join(meta.DataDir, "postgresql.conf")
+		confPath := filepath.Join(newDataDir, "postgresql.conf")
 		if err := utils.UpdatePostgresqlConfParam(confPath, "port", newPort); err != nil {
 			fmt.Printf("Warning: Failed to update port in %s: %v\n", confPath, err)
 		}
@@ -140,6 +163,7 @@ func runModify(instanceName string) {
 		}
 		_ = utils.UpdatePgrc(pgrcPath, envs)
 	}
+
 
 	serviceChanged := (modifyBinPath != "" || modifyDataDir != "" || modifyOSUser != "")
 	if serviceChanged {

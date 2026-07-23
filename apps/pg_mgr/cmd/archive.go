@@ -22,6 +22,7 @@ var (
 	archiveDir       string
 	archiveCommand   string
 	archiveSilent    bool
+	archiveMigrate   bool
 	archiveCheckRoot = func() bool { return os.Geteuid() == 0 }
 )
 
@@ -86,6 +87,7 @@ func init() {
 	archiveCmd.PersistentFlags().StringVarP(&archiveDir, "dir", "d", "", "WAL archive target directory")
 	archiveCmd.PersistentFlags().StringVarP(&archiveCommand, "command", "c", "", "Custom pg_mgr archive command")
 	archiveCmd.PersistentFlags().BoolVarP(&archiveSilent, "silent", "s", false, "Run in silent mode")
+	archiveCmd.PersistentFlags().BoolVarP(&archiveMigrate, "migrate", "m", false, "Migrate existing WAL archive files to the new directory")
 
 	compFunc := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		var list []string
@@ -182,17 +184,16 @@ func runArchiveEnable(instanceName string) {
 		os.Exit(1)
 	}
 
+	confPath := filepath.Join(meta.DataDir, "postgresql.conf")
+	oldFullCmd, _ := utils.GetPostgresqlConfParam(confPath, "archive_command")
+	userPart, oldPgMgrCmd := utils.ParseArchiveCommand(oldFullCmd)
+	oldArchiveDir := utils.ExtractArchiveDirFromCmd(oldPgMgrCmd)
+
+	targetDir := ""
 	newPgMgrCmd := archiveCommand
 	if newPgMgrCmd == "" && archiveDir != "" {
-		cleanDir := filepath.Clean(archiveDir)
-		u, err := user.Lookup(meta.User)
-		if err == nil {
-			uid, _ := strconv.Atoi(u.Uid)
-			gid, _ := strconv.Atoi(u.Gid)
-			os.MkdirAll(cleanDir, 0755)
-			os.Chown(cleanDir, uid, gid)
-		}
-		newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", cleanDir)
+		targetDir = filepath.Clean(archiveDir)
+		newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", targetDir)
 	}
 
 	if newPgMgrCmd == "" && !archiveSilent {
@@ -200,18 +201,42 @@ func runArchiveEnable(instanceName string) {
 		if choice == "1" {
 			defaultDir := filepath.Join(config.Global.BaseDir, "archive", instanceName)
 			dir := utils.PromptInput(i18n.T("prompt_archive_dir"), defaultDir)
-			cleanDir := filepath.Clean(dir)
-			u, err := user.Lookup(meta.User)
-			if err == nil {
-				uid, _ := strconv.Atoi(u.Uid)
-				gid, _ := strconv.Atoi(u.Gid)
-				os.MkdirAll(cleanDir, 0755)
-				os.Chown(cleanDir, uid, gid)
-			}
-			newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", cleanDir)
+			targetDir = filepath.Clean(dir)
+			newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", targetDir)
 		} else {
 			defaultCmd := fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", filepath.Join(config.Global.BaseDir, "archive", instanceName))
 			newPgMgrCmd = utils.PromptInput(i18n.T("prompt_archive_cmd"), defaultCmd)
+			targetDir = utils.ExtractArchiveDirFromCmd(newPgMgrCmd)
+		}
+	}
+
+	if targetDir == "" && newPgMgrCmd != "" {
+		targetDir = utils.ExtractArchiveDirFromCmd(newPgMgrCmd)
+	}
+
+	if targetDir != "" {
+		doMigrate := archiveMigrate
+		if !doMigrate && !archiveSilent && oldArchiveDir != "" && oldArchiveDir != targetDir {
+			if _, err := os.Stat(oldArchiveDir); err == nil {
+				doMigrate = utils.PromptConfirm(i18n.T("prompt_migrate_archive", oldArchiveDir, targetDir))
+			}
+		}
+
+		if oldArchiveDir != "" && targetDir != oldArchiveDir && doMigrate {
+			fmt.Printf("Migrating WAL archive directory from %s to %s...\n", oldArchiveDir, targetDir)
+			if err := utils.MigrateDirectory(oldArchiveDir, targetDir); err != nil {
+				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_archive_failed", err)))
+			} else {
+				fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_archive_success", oldArchiveDir, targetDir)))
+			}
+		}
+
+		u, err := user.Lookup(meta.User)
+		if err == nil {
+			uid, _ := strconv.Atoi(u.Uid)
+			gid, _ := strconv.Atoi(u.Gid)
+			os.MkdirAll(targetDir, 0755)
+			os.Chown(targetDir, uid, gid)
 		}
 	}
 
@@ -220,13 +245,10 @@ func runArchiveEnable(instanceName string) {
 		os.Exit(1)
 	}
 
-	confPath := filepath.Join(meta.DataDir, "postgresql.conf")
-	oldFullCmd, _ := utils.GetPostgresqlConfParam(confPath, "archive_command")
-	userPart, _ := utils.ParseArchiveCommand(oldFullCmd)
-
 	newFullCmd := utils.BuildArchiveCommand(userPart, newPgMgrCmd)
 
 	oldMode, _ := utils.GetPostgresqlConfParam(confPath, "archive_mode")
+
 
 	if err := utils.UpdatePostgresqlConfParam(confPath, "archive_mode", "on"); err != nil {
 		fmt.Printf("Failed to update archive_mode in %s: %v\n", confPath, err)
