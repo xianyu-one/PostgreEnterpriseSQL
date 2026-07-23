@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/jedib0t/go-pretty/v6/text"
 
@@ -475,6 +476,90 @@ func RunAsUserWithOutputForInstance(username string, meta config.InstanceMeta, c
 	return RunAsUserWithOutput(username, fullCmd)
 }
 
+// CopyDir recursively copies directory structure and files from src to dst.
+func CopyDir(src, dst string) error {
+	src = filepath.Clean(src)
+	dst = filepath.Clean(dst)
+
+	fi, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("source '%s' is not a directory", src)
+	}
+
+	if err := os.MkdirAll(dst, fi.Mode().Perm()); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(srcPath)
+			if err != nil {
+				return err
+			}
+			_ = os.Remove(dstPath)
+			if err := os.Symlink(linkTarget, dstPath); err != nil {
+				return err
+			}
+		} else if info.IsDir() {
+			if err := CopyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := CopyFile(srcPath, dstPath, info.Mode()); err != nil {
+				return err
+			}
+		}
+
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			_ = os.Chown(dstPath, int(stat.Uid), int(stat.Gid))
+		}
+		_ = os.Chtimes(dstPath, info.ModTime(), info.ModTime())
+	}
+
+	if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
+		_ = os.Chown(dst, int(stat.Uid), int(stat.Gid))
+	}
+	_ = os.Chtimes(dst, fi.ModTime(), fi.ModTime())
+
+	return nil
+}
+
+// CopyFile copies a single file from src to dst preserving file mode.
+func CopyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
+}
+
 // MigrateDirectory moves or copies directory contents from oldDir to newDir.
 func MigrateDirectory(oldDir, newDir string) error {
 	oldDir = filepath.Clean(oldDir)
@@ -507,8 +592,7 @@ func MigrateDirectory(oldDir, newDir string) error {
 		return fmt.Errorf("failed to create target directory '%s': %v", newDir, err)
 	}
 
-	cpCmd := fmt.Sprintf("cp -a %s/. %s/", oldDir, newDir)
-	if err := RunCmd("bash", "-c", cpCmd); err != nil {
+	if err := CopyDir(oldDir, newDir); err != nil {
 		return fmt.Errorf("failed to copy files from '%s' to '%s': %v", oldDir, newDir, err)
 	}
 

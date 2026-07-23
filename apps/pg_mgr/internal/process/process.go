@@ -3,7 +3,7 @@ package process
 import (
 	"fmt"
 	"os"
-	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -23,35 +23,66 @@ type PgProcess struct {
 
 func FindPgProcesses() []PgProcess {
 	var instances []PgProcess
-	out, err := exec.Command("ps", "-eo", "pid,user,command").Output()
+
+	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return instances
 	}
 
-	lines := strings.Split(string(out), "\n")
-	for i, line := range lines {
-		if i == 0 {
-			continue // skip header
+	userCache := make(map[string]string)
+	getUser := func(uidStr string) string {
+		if u, ok := userCache[uidStr]; ok {
+			return u
 		}
-		line = strings.TrimSpace(line)
-		if line == "" {
+		uObj, err := user.LookupId(uidStr)
+		if err == nil && uObj.Username != "" {
+			userCache[uidStr] = uObj.Username
+			return uObj.Username
+		}
+		userCache[uidStr] = uidStr
+		return uidStr
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		parts := strings.Fields(line)
-		if len(parts) < 3 {
+		pidStr := entry.Name()
+		if _, err := strconv.Atoi(pidStr); err != nil {
+			continue // Not a PID directory
+		}
+
+		cmdlineBytes, err := os.ReadFile(filepath.Join("/proc", pidStr, "cmdline"))
+		if err != nil || len(cmdlineBytes) == 0 {
 			continue
 		}
-		pidStr := parts[0]
-		userStr := parts[1]
-		commandStr := strings.Join(parts[2:], " ")
+
+		commandStr := strings.TrimSpace(strings.ReplaceAll(string(cmdlineBytes), "\x00", " "))
+		if commandStr == "" {
+			continue
+		}
 
 		if isValidPg(commandStr) {
+			userStr := "unknown"
+			if statusBytes, err := os.ReadFile(filepath.Join("/proc", pidStr, "status")); err == nil {
+				for _, line := range strings.Split(string(statusBytes), "\n") {
+					if strings.HasPrefix(line, "Uid:") {
+						fields := strings.Fields(line)
+						if len(fields) >= 2 {
+							userStr = getUser(fields[1])
+						}
+						break
+					}
+				}
+			}
+
 			inst := parsePgProcess(pidStr, userStr, commandStr)
 			if inst.DataDir != "" && inst.DataDir != "Unknown" {
 				instances = append(instances, inst)
 			}
 		}
 	}
+
 	return instances
 }
 
@@ -160,42 +191,119 @@ type ProcInfo struct {
 	Command string
 }
 
+func getSystemUptime() float64 {
+	content, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(content))
+	if len(fields) > 0 {
+		val, err := strconv.ParseFloat(fields[0], 64)
+		if err == nil {
+			return val
+		}
+	}
+	return 0
+}
+
+func readProcList() []ProcInfo {
+	var procs []ProcInfo
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return procs
+	}
+
+	systemUptime := getSystemUptime()
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pidStr := entry.Name()
+		if _, err := strconv.Atoi(pidStr); err != nil {
+			continue
+		}
+
+		cmdlineBytes, err := os.ReadFile(filepath.Join("/proc", pidStr, "cmdline"))
+		cmdStr := ""
+		if err == nil && len(cmdlineBytes) > 0 {
+			cmdStr = strings.TrimSpace(strings.ReplaceAll(string(cmdlineBytes), "\x00", " "))
+		}
+
+		statBytes, err := os.ReadFile(filepath.Join("/proc", pidStr, "stat"))
+		if err != nil {
+			continue
+		}
+		statStr := string(statBytes)
+		lastParen := strings.LastIndex(statStr, ")")
+		if lastParen == -1 || lastParen+2 >= len(statStr) {
+			continue
+		}
+
+		fields := strings.Fields(statStr[lastParen+2:])
+		if len(fields) < 20 {
+			continue
+		}
+
+		ppid := fields[1]
+		utime, _ := strconv.ParseFloat(fields[11], 64)
+		stime, _ := strconv.ParseFloat(fields[12], 64)
+		starttime, _ := strconv.ParseFloat(fields[19], 64)
+
+		if cmdStr == "" {
+			firstParen := strings.Index(statStr, "(")
+			if firstParen != -1 && firstParen < lastParen {
+				cmdStr = statStr[firstParen+1 : lastParen]
+			}
+		}
+
+		var rssVal int64
+		if statusBytes, err := os.ReadFile(filepath.Join("/proc", pidStr, "status")); err == nil {
+			for _, line := range strings.Split(string(statusBytes), "\n") {
+				if strings.HasPrefix(line, "VmRSS:") {
+					statusFields := strings.Fields(line)
+					if len(statusFields) >= 2 {
+						rssVal, _ = strconv.ParseInt(statusFields[1], 10, 64)
+					}
+					break
+				}
+			}
+		}
+		if rssVal == 0 && len(fields) >= 22 {
+			pages, _ := strconv.ParseInt(fields[21], 10, 64)
+			rssVal = pages * 4
+		}
+
+		var cpuVal float64
+		if systemUptime > 0 {
+			processSeconds := systemUptime - (starttime / 100.0)
+			if processSeconds > 0 {
+				totalTimeSeconds := (utime + stime) / 100.0
+				cpuVal = (totalTimeSeconds / processSeconds) * 100.0
+			}
+		}
+
+		procs = append(procs, ProcInfo{
+			PID:     pidStr,
+			PPID:    ppid,
+			CPU:     cpuVal,
+			RSS:     rssVal,
+			Command: cmdStr,
+		})
+	}
+
+	return procs
+}
+
 func GetInstanceResourceUsage(dataDir string) (string, string) {
 	if dataDir == "" || dataDir == "Unknown" {
 		return "0.0%", "0 B"
 	}
 	cleanTargetDir := filepath.Clean(dataDir)
 
-	out, err := exec.Command("ps", "-eo", "pid,ppid,%cpu,rss,args").Output()
-	if err != nil {
+	procs := readProcList()
+	if len(procs) == 0 {
 		return "0.0%", "0 B"
-	}
-
-	var procs []ProcInfo
-	lines := strings.Split(string(out), "\n")
-	for i, line := range lines {
-		if i == 0 {
-			continue
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
-		cpuVal, _ := strconv.ParseFloat(fields[2], 64)
-		rssVal, _ := strconv.ParseInt(fields[3], 10, 64)
-		cmd := strings.Join(fields[4:], " ")
-
-		procs = append(procs, ProcInfo{
-			PID:     fields[0],
-			PPID:    fields[1],
-			CPU:     cpuVal,
-			RSS:     rssVal,
-			Command: cmd,
-		})
 	}
 
 	// Step 1: Find main PID for the dataDir

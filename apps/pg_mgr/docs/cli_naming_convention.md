@@ -122,3 +122,23 @@
    - Root 专属命令：在 `Run` 函数起始位置调用 `utils.EnsureRoot()`。
    - 实例相关命令：在 `Run` 函数起始位置调用 `utils.EnsureInstancePermission(instanceName)`。
 5. **添加 i18n 多语言**：在 `internal/i18n/i18n.go` 中同步添加 `en` 和 `zh-CN` 字符串。
+
+---
+
+## 6. 优先使用纯 Go 实现规范 (Pure Go First Implementation Guideline)
+
+为了降低对外部系统 Shell 命令（如 `ps`、`kill`、`cp` 等）的依赖，消除进程派生 (fork/exec) 的开销并提升极简系统环境下的健壮性与运行效率，开发中必须遵循**优先使用纯 Golang 原生实现**的原则：
+
+1. **进程检测与资源统计**：
+   - 严禁调用外部 `ps` 等 Shell 命令。
+   - 统一通过直接读取 Linux `/proc` 虚拟文件系统（如 `/proc/<pid>/cmdline`、`/proc/<pid>/status`、`/proc/<pid>/stat`）获取进程列表、运行用户、CPU 占比及 RSS 内存占用。
+2. **进程信号与状态控制**：
+   - 严禁使用 `exec.Command("kill", ...)` 检查或终止进程。
+   - 统一使用 Go 原生 `syscall.Kill(pid, sig)` 发送信号，或通过 `/proc/<pid>` 判断进程存活状态。
+3. **文件与目录迁移/复制**：
+   - 严禁使用 `cp -a` 或 shell 脚本复制目录。
+   - 统一使用 Go 原生递归复制（如 `utils.CopyDir` / `utils.CopyFile`），精确控制文件权限 (`os.Chmod`)、所有权 (`os.Chown`) 及时间戳 (`os.Chtimes`)。
+4. **外部命令使用边界**：
+   - 仅在必须调用 PostgreSQL 核心二进制工具（如 `initdb`, `pg_ctl`, `pg_rman`, `psql`）或 Linux 系统服务管理工具（如 `systemctl`）时允许使用 `exec.Command`。
+   - 所有通用系统操作（文件/目录处理、进程探测、信号传递、用户状态判断）必须采用纯 Go 原生 API 实现。
+

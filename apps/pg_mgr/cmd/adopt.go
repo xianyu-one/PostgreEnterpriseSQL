@@ -3,11 +3,11 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
@@ -150,9 +150,10 @@ func runAdopt() {
 	oldServiceFiles := detectOldServiceFiles(target)
 
 	executeStep(i18n.T("step_kill_old"), func() error {
-		exec.Command("kill", "-INT", target.PID).Run()
+		pidInt, _ := strconv.Atoi(target.PID)
+		syscall.Kill(pidInt, syscall.SIGINT)
 		for i := 0; i < 15; i++ {
-			if err := exec.Command("kill", "-0", target.PID).Run(); err != nil {
+			if err := syscall.Kill(pidInt, 0); err != nil {
 				return nil
 			}
 			time.Sleep(500 * time.Millisecond)
