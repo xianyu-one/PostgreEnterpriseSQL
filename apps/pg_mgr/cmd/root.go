@@ -21,6 +21,7 @@ type InstallConfig struct {
 	Password     string
 	Silent       bool
 	DataDir      string
+	OSUser       string
 }
 
 var Config InstallConfig

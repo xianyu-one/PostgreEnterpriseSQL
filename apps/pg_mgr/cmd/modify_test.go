@@ -99,3 +99,56 @@ func TestModifyInstancePort(t *testing.T) {
 		t.Errorf("port param not found in postgresql.conf")
 	}
 }
+
+func TestModifyInstanceOSUser(t *testing.T) {
+	oldCheck := modifyCheckRoot
+	modifyCheckRoot = func() bool { return true }
+	defer func() { modifyCheckRoot = oldCheck }()
+
+	currUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "pg_mgr_modify_user_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dataDir := filepath.Join(tempDir, "data")
+	backupDir := filepath.Join(tempDir, "backup")
+	_ = os.MkdirAll(dataDir, 0755)
+	_ = os.MkdirAll(backupDir, 0755)
+
+	configPath := filepath.Join(tempDir, "conf.yaml")
+	config.ConfigFilePath = configPath
+	defer func() { config.ConfigFilePath = "/etc/pg_mgr/conf.yaml" }()
+
+	config.Global.Instances = make(map[string]config.InstanceMeta)
+	config.Global.Instances["test-user-inst"] = config.InstanceMeta{
+		User:    currUser.Username,
+		DataDir: dataDir,
+		BinPath: "/usr/bin/postgres",
+		Port:    "5432",
+		Pgrman: &config.PgrmanConfig{
+			BackupDir: backupDir,
+		},
+	}
+
+	modifyPort = ""
+	modifyBinPath = ""
+	modifyDataDir = ""
+	modifyOSUser = currUser.Username
+	defer func() { modifyOSUser = "" }()
+
+	runModify("test-user-inst")
+
+	meta, exists := config.Global.Instances["test-user-inst"]
+	if !exists {
+		t.Fatalf("instance not found")
+	}
+	if meta.User != currUser.Username {
+		t.Errorf("expected user %s, got %s", currUser.Username, meta.User)
+	}
+}

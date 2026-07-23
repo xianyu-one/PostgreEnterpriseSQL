@@ -27,6 +27,7 @@ var createInstanceCmd = &cobra.Command{
 
 func init() {
 	createInstanceCmd.Flags().StringVarP(&Config.InstanceName, "instance", "i", "default", "Instance name for multi-instance support")
+	createInstanceCmd.Flags().StringVarP(&Config.OSUser, "os-user", "u", "postgres", "OS user who runs the database instance")
 	createInstanceCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", "Major version path structure")
 	createInstanceCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", "Minor version path structure")
 	createInstanceCmd.Flags().StringVar(&Config.DataDir, "data", "", "Data directory path (defaults to base_dir/instances/instance_name)")
@@ -39,7 +40,10 @@ func init() {
 }
 
 func runCreateInstance() {
-	utils.EnsureUserPermission("postgres")
+	if Config.OSUser == "" {
+		Config.OSUser = "postgres"
+	}
+	utils.EnsureUserPermission(Config.OSUser)
 
 	baseDir := config.Global.BaseDir
 	installed, err := utils.GetInstalledVersions(baseDir)
@@ -59,6 +63,7 @@ func runCreateInstance() {
 
 	if !Config.Silent {
 		Config.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), Config.InstanceName)
+		Config.OSUser = utils.PromptInput(i18n.T("prompt_os_user"), Config.OSUser)
 		Config.MajorVersion = utils.PromptInput(i18n.T("prompt_major"), Config.MajorVersion)
 		Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
 
@@ -76,6 +81,11 @@ func runCreateInstance() {
 		if Config.DataDir == "" {
 			Config.DataDir = filepath.Join(baseDir, "instances", Config.InstanceName)
 		}
+	}
+
+	osUser := Config.OSUser
+	if osUser == "" {
+		osUser = "postgres"
 	}
 
 	versionPathFull := filepath.Join(baseDir, Config.MajorVersion, Config.MinorVersion)
@@ -124,12 +134,23 @@ func runCreateInstance() {
 
 	var pgUserHome string
 	executeStep(i18n.T("step_user"), func() error {
-		u, err := user.Lookup("postgres")
+		u, err := user.Lookup(osUser)
 		if err != nil {
-			pgUserHome = filepath.Join(baseDir, "home")
-			_ = utils.RunCmd("groupadd", "-g", "5432", "postgres")
-			_ = utils.RunCmd("useradd", "-g", "postgres", "-u", "5432", "-d", pgUserHome, "postgres")
-			u, _ = user.Lookup("postgres")
+			if !utils.IsRoot() {
+				return fmt.Errorf("user %s does not exist and root privileges are required to create users", osUser)
+			}
+			pgUserHome = filepath.Join(baseDir, "home", osUser)
+			if osUser == "postgres" {
+				_ = utils.RunCmd("groupadd", "-g", "5432", "postgres")
+				_ = utils.RunCmd("useradd", "-g", "postgres", "-u", "5432", "-d", pgUserHome, "postgres")
+			} else {
+				_ = utils.RunCmd("groupadd", osUser)
+				_ = utils.RunCmd("useradd", "-g", osUser, "-d", pgUserHome, "-m", osUser)
+			}
+			u, err = user.Lookup(osUser)
+			if err != nil {
+				return fmt.Errorf("failed to lookup user %s: %v", osUser, err)
+			}
 		} else {
 			pgUserHome = u.HomeDir
 		}
@@ -137,28 +158,26 @@ func runCreateInstance() {
 		uid, _ := strconv.Atoi(u.Uid)
 		gid, _ := strconv.Atoi(u.Gid)
 
-		// Create Directories safely
-		dirs := []string{versionPathFull, pgUserHome, dataDir, backupDir}
+		// Create Directories safely for instance owner
+		dirs := []string{pgUserHome, dataDir, backupDir}
 		for _, d := range dirs {
 			os.MkdirAll(d, 0755)
 			os.Chown(d, uid, gid)
 		}
 
-		// Recursively chown base directory avoiding symlink issues
-		filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
-			if err == nil {
-				os.Chown(path, uid, gid)
-			}
-			return nil
-		})
+		// Ensure software package directory has proper accessible permissions without altering ownership
+		_ = utils.EnsurePkgPermissions(versionPathFull)
 
-		return utils.RunCmd("loginctl", "enable-linger", "postgres")
+		if osUser != "root" {
+			return utils.RunCmd("loginctl", "enable-linger", osUser)
+		}
+		return nil
 	})
 
 	executeStep(i18n.T("step_env"), func() error {
 		bashProfile := filepath.Join(pgUserHome, ".bash_profile")
 		pgrcPath := filepath.Join(pgUserHome, ".pgrc")
-		u, _ := user.Lookup("postgres")
+		u, _ := user.Lookup(osUser)
 		uid, _ := strconv.Atoi(u.Uid)
 		gid, _ := strconv.Atoi(u.Gid)
 
@@ -188,7 +207,7 @@ source %s
 	executeStep(i18n.T("step_initdb"), func() error {
 		pgCtl := filepath.Join(versionPathFull, "bin", "pg_ctl")
 		cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -D %s initdb", versionPathFull, pgCtl, dataDir)
-		return utils.RunAsUser("postgres", cmd)
+		return utils.RunAsUser(osUser, cmd)
 	})
 
 	executeStep(i18n.T("step_pgconf"), func() error {
@@ -204,14 +223,23 @@ source %s
 
 	serviceName := fmt.Sprintf("postgresql-%s.service", Config.InstanceName)
 	executeStep(i18n.T("step_systemd"), func() error {
-		u, _ := user.Lookup("postgres")
+		u, _ := user.Lookup(osUser)
 		uid, _ := strconv.Atoi(u.Uid)
 		gid, _ := strconv.Atoi(u.Gid)
 
-		utils.RunAsUser("postgres", "mkdir -p ~/.config/systemd/user")
-		sysdDir := filepath.Join(u.HomeDir, ".config", "systemd", "user")
-		svcPath := filepath.Join(sysdDir, serviceName)
-		pgBin := filepath.Join(versionPathFull, "bin")
+		var svcPath string
+		var wantedBy string
+		if osUser == "root" {
+			svcPath = filepath.Join("/etc/systemd/system", serviceName)
+			wantedBy = "multi-user.target"
+		} else {
+			utils.RunAsUser(osUser, "mkdir -p ~/.config/systemd/user")
+			sysdDir := filepath.Join(u.HomeDir, ".config", "systemd", "user")
+			svcPath = filepath.Join(sysdDir, serviceName)
+			wantedBy = "default.target"
+		}
+
+		binDir := filepath.Join(versionPathFull, "bin")
 
 		svcContent := fmt.Sprintf(`[Unit]
 Description=PostgreSQL database server (%s)
@@ -229,29 +257,37 @@ TimeoutSec=infinity
 Restart=on-failure
 
 [Install]
-WantedBy=default.target
-`, Config.InstanceName, pgBin, dataDir)
+WantedBy=%s
+`, Config.InstanceName, binDir, dataDir, wantedBy)
 
-		os.WriteFile(svcPath, []byte(svcContent), 0644)
-		os.Chown(svcPath, uid, gid)
-		return nil
+		err := os.WriteFile(svcPath, []byte(svcContent), 0644)
+		if err != nil {
+			return err
+		}
+		return os.Chown(svcPath, uid, gid)
 	})
 
 	executeStep(i18n.T("step_start"), func() error {
-		utils.RunAsUser("postgres", "systemctl --user daemon-reload")
-		utils.RunAsUser("postgres", fmt.Sprintf("systemctl --user enable %s", serviceName))
-		return utils.RunAsUser("postgres", fmt.Sprintf("systemctl --user start %s", serviceName))
+		if osUser == "root" {
+			utils.RunCmd("systemctl", "daemon-reload")
+			utils.RunCmd("systemctl", "enable", serviceName)
+			return utils.RunCmd("systemctl", "start", serviceName)
+		} else {
+			utils.RunAsUser(osUser, "systemctl --user daemon-reload")
+			utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName))
+			return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
+		}
 	})
 
 	executeStep(i18n.T("step_password"), func() error {
 		psql := filepath.Join(versionPathFull, "bin", "psql")
 		cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -p %d -c \"ALTER USER postgres WITH PASSWORD '%s';\"", versionPathFull, psql, Config.Port, Config.Password)
-		return utils.RunAsUser("postgres", cmd)
+		return utils.RunAsUser(osUser, cmd)
 	})
 
 	// Add to Global Registry
 	pgBin = filepath.Join(versionPathFull, "bin", "postgres")
-	config.SaveInstanceToRegistry(Config.InstanceName, "postgres", dataDir, pgBin, strconv.Itoa(Config.Port))
+	config.SaveInstanceToRegistry(Config.InstanceName, osUser, dataDir, pgBin, strconv.Itoa(Config.Port))
 
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))

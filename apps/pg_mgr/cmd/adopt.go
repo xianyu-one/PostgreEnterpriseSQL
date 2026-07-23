@@ -164,6 +164,10 @@ func runAdopt() {
 		if osUser != "root" {
 			utils.RunCmd("loginctl", "enable-linger", osUser)
 		}
+		// Ensure pkg directory permissions for target.BinPath
+		if binDir := filepath.Dir(filepath.Dir(target.BinPath)); binDir != "" && binDir != "." && binDir != "/" {
+			_ = utils.EnsurePkgPermissions(binDir)
+		}
 		// Try to fix permissions gently
 		filepath.Walk(target.DataDir, func(path string, info os.FileInfo, err error) error {
 			if err == nil {
@@ -398,9 +402,15 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 		}
 	}
 
-	if osUser == "" {
-		osUser = utils.PromptInput(i18n.T("prompt_os_user"), "postgres")
+	defaultUser := osUser
+	if defaultUser == "" || defaultUser == "postgres" {
+		if detected := utils.DetectDirOwner(dataDirClean); detected != "" {
+			defaultUser = detected
+		} else {
+			defaultUser = "postgres"
+		}
 	}
+	osUser = utils.PromptInput(i18n.T("prompt_os_user"), defaultUser)
 	u, err := user.Lookup(osUser)
 	if err != nil {
 		if utils.PromptConfirm(i18n.T("prompt_create_user", osUser)) {
@@ -501,6 +511,9 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 	executeStep(i18n.T("step_user"), func() error {
 		if osUser != "root" {
 			utils.RunCmd("loginctl", "enable-linger", osUser)
+		}
+		if binDir := filepath.Dir(filepath.Dir(binPath)); binDir != "" && binDir != "." && binDir != "/" {
+			_ = utils.EnsurePkgPermissions(binDir)
 		}
 		filepath.Walk(dataDirClean, func(path string, info os.FileInfo, err error) error {
 			if err == nil {

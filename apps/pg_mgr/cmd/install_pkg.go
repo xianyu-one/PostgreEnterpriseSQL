@@ -165,14 +165,6 @@ func runInstallPkg(cmd *cobra.Command) {
 			os.Chown(d, uid, gid)
 		}
 
-		// Recursively chown base directory avoiding symlink issues
-		filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
-			if err == nil {
-				os.Chown(path, uid, gid)
-			}
-			return nil
-		})
-
 		return utils.RunCmd("loginctl", "enable-linger", "postgres")
 	})
 
@@ -185,7 +177,10 @@ func runInstallPkg(cmd *cobra.Command) {
 		u, _ := user.Lookup("postgres")
 		uid, _ := strconv.Atoi(u.Uid)
 		gid, _ := strconv.Atoi(u.Gid)
-		return utils.UntarGz(file, versionPathFull, uid, gid)
+		if err := utils.UntarGz(file, versionPathFull, uid, gid); err != nil {
+			return err
+		}
+		return utils.EnsurePkgPermissions(versionPathFull)
 	})
 
 	pw.Stop()

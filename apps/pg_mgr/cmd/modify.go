@@ -143,6 +143,12 @@ func runModify(instanceName string) {
 
 	serviceChanged := (modifyBinPath != "" || modifyDataDir != "" || modifyOSUser != "")
 	if serviceChanged {
+		if err := utils.ChangeInstanceOwnership(instanceName, meta, newDataDir, newOSUser); err != nil {
+			fmt.Printf("Warning: Failed to update directory ownership: %v\n", err)
+		}
+		if newOSUser != "root" {
+			_ = utils.RunCmd("loginctl", "enable-linger", newOSUser)
+		}
 		deleteSystemdService(instanceName, meta.User)
 		writeSystemdService(instanceName, newOSUser, newBinPath, newDataDir)
 	}
