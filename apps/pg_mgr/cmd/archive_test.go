@@ -172,3 +172,96 @@ func TestArchiveMigration(t *testing.T) {
 	}
 }
 
+func TestArchiveMigrationPgrmanSync(t *testing.T) {
+	oldCheck := archiveCheckRoot
+	archiveCheckRoot = func() bool { return true }
+	defer func() { archiveCheckRoot = oldCheck }()
+
+	currUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("failed to get current user: %v", err)
+	}
+
+	tempDir, err := os.MkdirTemp("", "pg_mgr_archive_pgrman_mig_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dataDir := filepath.Join(tempDir, "data")
+	backupDir := filepath.Join(tempDir, "backup")
+	oldArcDir := filepath.Join(tempDir, "old_arc")
+	newArcDir := filepath.Join(tempDir, "new_arc")
+
+	_ = os.MkdirAll(dataDir, 0755)
+	_ = os.MkdirAll(backupDir, 0755)
+	_ = os.MkdirAll(oldArcDir, 0755)
+
+	walFile := filepath.Join(oldArcDir, "000000010000000000000001")
+	_ = os.WriteFile(walFile, []byte("wal content"), 0644)
+
+	iniPath := filepath.Join(backupDir, "pg_rman.ini")
+	initialIni := "SRVLOG_PATH='/tmp/srv'\nARCLOG_PATH='" + oldArcDir + "'\nCOMPRESS_DATA=YES\nKEEP_ARCLOG_DAYS=7\nKEEP_SRVLOG_DAYS=7\nKEEP_DATA_DAYS=30\n"
+	_ = os.WriteFile(iniPath, []byte(initialIni), 0644)
+
+	confPath := filepath.Join(dataDir, "postgresql.conf")
+	initialConf := "archive_mode = on\narchive_command = 'true PG_MGR_ARCHIVE_START ; export PG_ARCHDIR=" + oldArcDir + " && test ! -f $PG_ARCHDIR/%f && cp %p $PG_ARCHDIR/%f && true PG_MGR_ARCHIVE_END'\n"
+	_ = os.WriteFile(confPath, []byte(initialConf), 0644)
+
+	configPath := filepath.Join(tempDir, "conf.yaml")
+	config.ConfigFilePath = configPath
+	defer func() { config.ConfigFilePath = "/etc/pg_mgr/conf.yaml" }()
+
+	config.Global.Instances = make(map[string]config.InstanceMeta)
+	config.Global.Instances["arc-pgrman-inst"] = config.InstanceMeta{
+		User:    currUser.Username,
+		DataDir: dataDir,
+		BinPath: "/usr/bin/postgres",
+		Port:    "5432",
+		Pgrman: &config.PgrmanConfig{
+			Tool:           "pgrman",
+			BackupDir:      backupDir,
+			SrvLogPath:     "/tmp/srv",
+			ArcLogPath:     oldArcDir,
+			CompressData:   "YES",
+			KeepArcLogDays: 7,
+			KeepSrvLogDays: 7,
+			KeepDataDays:   30,
+		},
+	}
+
+	archiveDir = newArcDir
+	archiveCommand = ""
+	archiveSilent = true
+	archiveMigrate = true
+	defer func() {
+		archiveDir = ""
+		archiveSilent = false
+		archiveMigrate = false
+	}()
+
+	runArchiveEnable("arc-pgrman-inst")
+
+	// 1. Verify WAL migration
+	if _, err := os.Stat(oldArcDir); !os.IsNotExist(err) {
+		t.Errorf("expected old archive directory to be migrated/removed")
+	}
+
+	// 2. Verify config.Global Instance Pgrman ArcLogPath is updated
+	instMeta := config.Global.Instances["arc-pgrman-inst"]
+	if instMeta.Pgrman == nil || instMeta.Pgrman.ArcLogPath != newArcDir {
+		t.Errorf("expected Pgrman.ArcLogPath to be updated to %s, got %v", newArcDir, instMeta.Pgrman)
+	}
+
+	// 3. Verify pg_rman.ini is updated with new ARCLOG_PATH
+	iniContent, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("failed to read pg_rman.ini: %v", err)
+	}
+	expectedLine := "ARCLOG_PATH='" + newArcDir + "'"
+	if !strings.Contains(string(iniContent), expectedLine) {
+		t.Errorf("expected pg_rman.ini to contain %s, got:\n%s", expectedLine, string(iniContent))
+	}
+}
+
+

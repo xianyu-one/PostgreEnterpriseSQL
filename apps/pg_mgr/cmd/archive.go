@@ -239,6 +239,31 @@ func runArchiveEnable(instanceName string) {
 			os.MkdirAll(targetDir, 0755)
 			os.Chown(targetDir, uid, gid)
 		}
+
+		if meta.Pgrman != nil {
+			meta.Pgrman.ArcLogPath = targetDir
+			_ = config.SaveInstancePgrmanConfig(instanceName, meta.Pgrman)
+
+			if meta.Pgrman.BackupDir != "" {
+				if _, err := os.Stat(meta.Pgrman.BackupDir); err == nil {
+					iniPath := filepath.Join(meta.Pgrman.BackupDir, "pg_rman.ini")
+					compressData := meta.Pgrman.CompressData
+					if compressData == "" {
+						compressData = "YES"
+					}
+					iniContent := fmt.Sprintf("SRVLOG_PATH='%s'\nARCLOG_PATH='%s'\nCOMPRESS_DATA=%s\nKEEP_ARCLOG_DAYS=%d\nKEEP_SRVLOG_DAYS=%d\nKEEP_DATA_DAYS=%d\n",
+						meta.Pgrman.SrvLogPath, targetDir, compressData,
+						meta.Pgrman.KeepArcLogDays, meta.Pgrman.KeepSrvLogDays, meta.Pgrman.KeepDataDays)
+					if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err == nil {
+						if u, err := user.Lookup(meta.User); err == nil {
+							uid, _ := strconv.Atoi(u.Uid)
+							gid, _ := strconv.Atoi(u.Gid)
+							_ = os.Chown(iniPath, uid, gid)
+						}
+					}
+				}
+			}
+		}
 	}
 
 	if newPgMgrCmd == "" {
