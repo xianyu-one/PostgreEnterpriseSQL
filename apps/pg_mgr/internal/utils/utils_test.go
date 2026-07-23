@@ -301,6 +301,83 @@ func TestMigrateDirectory(t *testing.T) {
 	}
 }
 
+func TestMigrateDirectoryToSubdirectory(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "migrate_subdir_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	oldDir := filepath.Join(tempDir, "archive")
+	newDir := filepath.Join(oldDir, "hkdb")
+
+	_ = os.MkdirAll(filepath.Join(oldDir, "subdir"), 0755)
+	file1 := filepath.Join(oldDir, "wal_001")
+	file2 := filepath.Join(oldDir, "subdir", "wal_002")
+	_ = os.WriteFile(file1, []byte("wal1"), 0644)
+	_ = os.WriteFile(file2, []byte("wal2"), 0644)
+
+	err = MigrateDirectory(oldDir, newDir)
+	if err != nil {
+		t.Fatalf("MigrateDirectory to subdirectory failed: %v", err)
+	}
+
+	newFile1 := filepath.Join(newDir, "wal_001")
+	newFile2 := filepath.Join(newDir, "subdir", "wal_002")
+
+	if content, err := os.ReadFile(newFile1); err != nil || string(content) != "wal1" {
+		t.Errorf("expected newFile1 content 'wal1', got '%s', err: %v", string(content), err)
+	}
+	if content, err := os.ReadFile(newFile2); err != nil || string(content) != "wal2" {
+		t.Errorf("expected newFile2 content 'wal2', got '%s', err: %v", string(content), err)
+	}
+
+	// Verify oldDir top-level files were cleaned up and only newDir exists inside oldDir
+	entries, err := os.ReadDir(oldDir)
+	if err != nil {
+		t.Fatalf("failed to read oldDir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "hkdb" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("expected only 'hkdb' in oldDir, got: %v", names)
+	}
+}
+
+func TestCopyDirToSubdirectory(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "copydir_subdir_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	srcDir := filepath.Join(tempDir, "src")
+	subDir := filepath.Join(srcDir, "sub")
+
+	_ = os.MkdirAll(srcDir, 0755)
+	file1 := filepath.Join(srcDir, "file1.txt")
+	_ = os.WriteFile(file1, []byte("data"), 0644)
+
+	err = CopyDir(srcDir, subDir)
+	if err != nil {
+		t.Fatalf("CopyDir failed: %v", err)
+	}
+
+	copiedFile := filepath.Join(subDir, "file1.txt")
+	if content, err := os.ReadFile(copiedFile); err != nil || string(content) != "data" {
+		t.Errorf("expected copied content 'data', got '%s', err: %v", string(content), err)
+	}
+
+	// Ensure sub/sub does not exist (no infinite recursion)
+	infiniteSub := filepath.Join(subDir, "sub")
+	if _, err := os.Stat(infiniteSub); !os.IsNotExist(err) {
+		t.Errorf("expected %s not to exist, but it exists", infiniteSub)
+	}
+}
+
+
 
 
 

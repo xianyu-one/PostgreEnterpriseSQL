@@ -694,6 +694,7 @@ func runPgrmanEdit(cmd *cobra.Command) {
 			fmt.Printf("Migrating backup directory from %s to %s...\n", oldBackupDirClean, newBackupDir)
 			if err := utils.MigrateDirectory(oldBackupDirClean, newBackupDir); err != nil {
 				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_backup_failed", err)))
+				os.Exit(1)
 			} else {
 				fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_backup_success", oldBackupDirClean, newBackupDir)))
 			}

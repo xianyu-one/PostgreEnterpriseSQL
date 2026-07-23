@@ -226,6 +226,7 @@ func runArchiveEnable(instanceName string) {
 			fmt.Printf("Migrating WAL archive directory from %s to %s...\n", oldArchiveDir, targetDir)
 			if err := utils.MigrateDirectory(oldArchiveDir, targetDir); err != nil {
 				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_archive_failed", err)))
+				os.Exit(1)
 			} else {
 				fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_archive_success", oldArchiveDir, targetDir)))
 			}

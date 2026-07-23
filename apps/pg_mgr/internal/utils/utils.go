@@ -476,10 +476,31 @@ func RunAsUserWithOutputForInstance(username string, meta config.InstanceMeta, c
 	return RunAsUserWithOutput(username, fullCmd)
 }
 
+// isSubpathOrEqual checks whether child is equal to parent or is a subdirectory inside parent.
+func isSubpathOrEqual(parent, child string) bool {
+	parent = filepath.Clean(parent)
+	child = filepath.Clean(child)
+	if parent == child {
+		return true
+	}
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+}
+
 // CopyDir recursively copies directory structure and files from src to dst.
 func CopyDir(src, dst string) error {
 	src = filepath.Clean(src)
 	dst = filepath.Clean(dst)
+	return copyDirInternal(src, dst, src, dst)
+}
+
+func copyDirInternal(src, dst, topSrc, topDst string) error {
+	if src == dst {
+		return nil
+	}
 
 	fi, err := os.Stat(src)
 	if err != nil {
@@ -493,6 +514,12 @@ func CopyDir(src, dst string) error {
 		return err
 	}
 
+	topDstFi, _ := os.Stat(topDst)
+	topSrcFi, _ := os.Stat(topSrc)
+
+	dstInsideSrc := isSubpathOrEqual(topSrc, topDst) && topSrc != topDst
+	srcInsideDst := isSubpathOrEqual(topDst, topSrc) && topSrc != topDst
+
 	entries, err := os.ReadDir(src)
 	if err != nil {
 		return err
@@ -501,6 +528,32 @@ func CopyDir(src, dst string) error {
 	for _, entry := range entries {
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
+
+		if srcPath == dstPath {
+			continue
+		}
+
+		if dstInsideSrc {
+			if isSubpathOrEqual(topDst, srcPath) {
+				continue
+			}
+			if topDstFi != nil {
+				if srcFi, err := os.Stat(srcPath); err == nil && os.SameFile(srcFi, topDstFi) {
+					continue
+				}
+			}
+		}
+
+		if srcInsideDst {
+			if isSubpathOrEqual(topSrc, dstPath) {
+				continue
+			}
+			if topSrcFi != nil {
+				if dstFi, err := os.Stat(dstPath); err == nil && os.SameFile(dstFi, topSrcFi) {
+					continue
+				}
+			}
+		}
 
 		info, err := entry.Info()
 		if err != nil {
@@ -517,7 +570,7 @@ func CopyDir(src, dst string) error {
 				return err
 			}
 		} else if info.IsDir() {
-			if err := CopyDir(srcPath, dstPath); err != nil {
+			if err := copyDirInternal(srcPath, dstPath, topSrc, topDst); err != nil {
 				return err
 			}
 		} else {
@@ -596,8 +649,27 @@ func MigrateDirectory(oldDir, newDir string) error {
 		return fmt.Errorf("failed to copy files from '%s' to '%s': %v", oldDir, newDir, err)
 	}
 
-	if err := os.RemoveAll(oldDir); err != nil {
-		fmt.Printf("Warning: failed to remove old directory '%s': %v\n", oldDir, err)
+	if isSubpathOrEqual(oldDir, newDir) {
+		entries, err := os.ReadDir(oldDir)
+		if err == nil {
+			newDirFi, _ := os.Stat(newDir)
+			for _, entry := range entries {
+				itemPath := filepath.Join(oldDir, entry.Name())
+				if isSubpathOrEqual(itemPath, newDir) {
+					continue
+				}
+				if newDirFi != nil {
+					if itemFi, err := os.Stat(itemPath); err == nil && os.SameFile(itemFi, newDirFi) {
+						continue
+					}
+				}
+				_ = os.RemoveAll(itemPath)
+			}
+		}
+	} else {
+		if err := os.RemoveAll(oldDir); err != nil {
+			fmt.Printf("Warning: failed to remove old directory '%s': %v\n", oldDir, err)
+		}
 	}
 
 	return nil
