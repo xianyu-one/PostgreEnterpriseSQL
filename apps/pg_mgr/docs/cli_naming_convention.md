@@ -85,7 +85,7 @@
 ### 4.1 权限等级划分
 
 1. **Root 专属权限 (Root-Only Scope)**
-   - **涉及场景**：修改全局配置文件（`/etc/pg_mgr/conf.yaml`）、创建/修改系统用户和组（`postgres`）、修改系统配置（`/etc/systemd/logind.conf`）、管理全局 systemd 系统服务（`/etc/systemd/system/pg_mgr.service`）、扫描全局 `/proc` 进程。
+   - **涉及场景**：修改全局配置文件（`/etc/pg_mgr/conf.yaml`）、创建/修改系统用户和组（`postgres`）、管理全局 systemd 系统服务（`/etc/systemd/system/pg_mgr.service`）、扫描全局 `/proc` 进程。
    - **涵盖子命令**：`init`, `pkg install`, `deploy`, `daemon *`, `adopt`, `sync`, `completion *`。
    - **控制逻辑**：若当前运行用户非 root (EUID != 0)，程序提示用户提权并退出：
      ```text

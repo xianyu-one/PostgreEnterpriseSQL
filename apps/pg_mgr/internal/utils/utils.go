@@ -68,6 +68,50 @@ func RunCmd(name string, args ...string) error {
 	return nil
 }
 
+// DetectLogindRemoveIPC returns the effective RemoveIPC setting reported by
+// systemd. With no explicit setting, systemd's documented default is "yes".
+func DetectLogindRemoveIPC() (string, error) {
+	output, err := exec.Command("systemd-analyze", "cat-config", "systemd/logind.conf").Output()
+	if err != nil {
+		return "unknown", fmt.Errorf("systemd-analyze cat-config failed: %w", err)
+	}
+	return ParseLogindRemoveIPC(string(output)), nil
+}
+
+// ParseLogindRemoveIPC parses merged systemd-analyze cat-config output.
+func ParseLogindRemoveIPC(content string) string {
+	setting := "yes"
+	inLoginSection := false
+
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inLoginSection = strings.EqualFold(line, "[Login]")
+			continue
+		}
+		if !inLoginSection {
+			continue
+		}
+
+		key, value, found := strings.Cut(line, "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(key), "RemoveIPC") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "no", "false", "off", "0":
+			setting = "no"
+		case "yes", "true", "on", "1":
+			setting = "yes"
+		default:
+			setting = "unknown"
+		}
+	}
+	return setting
+}
+
 func RunAsUser(username string, cmdStr string) error {
 	currUser, err := GetCurrentOSUser()
 	if err == nil && currUser == username {
@@ -674,7 +718,3 @@ func MigrateDirectory(oldDir, newDir string) error {
 
 	return nil
 }
-
-
-
-

@@ -9,6 +9,29 @@ import (
 	"pg_mgr/internal/config"
 )
 
+func TestParseLogindRemoveIPC(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "systemd default", content: "[Login]\n#RemoveIPC=yes\n", want: "yes"},
+		{name: "explicit no", content: "[Login]\nRemoveIPC=no\n", want: "no"},
+		{name: "drop-in overrides main file", content: "[Login]\nRemoveIPC=yes\n# /etc/systemd/logind.conf.d/60-pg_mgr.conf\n[Login]\nRemoveIPC=no\n", want: "no"},
+		{name: "ignore another section", content: "[Service]\nRemoveIPC=no\n[Login]\nRemoveIPC=yes\n", want: "yes"},
+		{name: "boolean aliases", content: "[Login]\nRemoveIPC=off\n", want: "no"},
+		{name: "invalid value", content: "[Login]\nRemoveIPC=maybe\n", want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseLogindRemoveIPC(tt.content); got != tt.want {
+				t.Fatalf("ParseLogindRemoveIPC() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUpdatePgrc(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "pgrc_test_*")
 	if err != nil {
@@ -376,8 +399,3 @@ func TestCopyDirToSubdirectory(t *testing.T) {
 		t.Errorf("expected %s not to exist, but it exists", infiniteSub)
 	}
 }
-
-
-
-
-

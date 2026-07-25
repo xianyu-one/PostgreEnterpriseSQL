@@ -10,7 +10,6 @@ import (
 	"pg_mgr/internal/config"
 )
 
-
 func TestRunUseCommand(t *testing.T) {
 	// Setup mock instances registry
 	origInstances := config.Global.Instances
@@ -76,5 +75,26 @@ func TestRunUseCommand(t *testing.T) {
 	// Stderr should contain instructions/warnings but not stdout commands
 	if !strings.Contains(stderrStr, "Run 'eval $(pg_mgr use <instance_name>)'") {
 		t.Errorf("stderr missing run instructions\nGot:\n%s", stderrStr)
+	}
+}
+
+func TestInstallCommandsDoNotDisruptLogind(t *testing.T) {
+	t.Parallel()
+
+	files := []string{"install_pkg.go", "install.go", "create.go"}
+	for _, name := range files {
+		content, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+
+		source := string(content)
+		for _, forbidden := range []string{
+			"restart\", \"systemd-logind",
+		} {
+			if strings.Contains(source, forbidden) {
+				t.Errorf("%s contains session-disrupting logind operation %q", name, forbidden)
+			}
+		}
 	}
 }

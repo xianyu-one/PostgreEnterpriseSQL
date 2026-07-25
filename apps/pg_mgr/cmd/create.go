@@ -6,7 +6,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -44,6 +43,7 @@ func runCreateInstance() {
 		Config.OSUser = "postgres"
 	}
 	utils.EnsureUserPermission(Config.OSUser)
+	checkRemoveIPC()
 
 	baseDir := config.Global.BaseDir
 	installed, err := utils.GetInstalledVersions(baseDir)
@@ -117,17 +117,6 @@ func runCreateInstance() {
 		}
 		tracker.MarkAsDone()
 	}
-
-	executeStep(i18n.T("step_logind"), func() error {
-		confPath := "/etc/systemd/logind.conf"
-		_ = utils.ReplaceInFile(confPath, `(?m)^#?RemoveIPC=.*`, "RemoveIPC=no")
-		content, _ := os.ReadFile(confPath)
-		if !strings.Contains(string(content), "RemoveIPC=no") {
-			utils.AppendToFile(confPath, "\nRemoveIPC=no\n")
-		}
-		utils.RunCmd("systemctl", "daemon-reload")
-		return utils.RunCmd("systemctl", "restart", "systemd-logind")
-	})
 
 	dataDir := Config.DataDir
 	backupDir := filepath.Join(baseDir, fmt.Sprintf("backup_%s", Config.InstanceName))

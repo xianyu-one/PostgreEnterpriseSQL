@@ -6,7 +6,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -48,6 +47,7 @@ func init() {
 
 func runInstallPkg(cmd *cobra.Command) {
 	utils.EnsureRoot()
+	checkRemoveIPC()
 
 	if !Config.Silent {
 		Config.TarPath = utils.PromptInput(i18n.T("prompt_tar"), Config.TarPath)
@@ -119,17 +119,6 @@ func runInstallPkg(cmd *cobra.Command) {
 		tracker.MarkAsDone()
 	}
 
-	executeStep(i18n.T("step_logind"), func() error {
-		confPath := "/etc/systemd/logind.conf"
-		_ = utils.ReplaceInFile(confPath, `(?m)^#?RemoveIPC=.*`, "RemoveIPC=no")
-		content, _ := os.ReadFile(confPath)
-		if !strings.Contains(string(content), "RemoveIPC=no") {
-			utils.AppendToFile(confPath, "\nRemoveIPC=no\n")
-		}
-		utils.RunCmd("systemctl", "daemon-reload")
-		return utils.RunCmd("systemctl", "restart", "systemd-logind")
-	})
-
 	baseDir := config.Global.BaseDir
 	versionPathFull := filepath.Join(baseDir, Config.MajorVersion, Config.MinorVersion)
 
@@ -185,4 +174,20 @@ func runInstallPkg(cmd *cobra.Command) {
 
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+}
+
+func checkRemoveIPC() {
+	setting, err := utils.DetectLogindRemoveIPC()
+	if err != nil {
+		fmt.Println(text.FgHiYellow.Sprint(i18n.T("removeipc_check_failed", err)))
+		fmt.Println(i18n.T("removeipc_manual_check"))
+		return
+	}
+	if setting == "no" {
+		fmt.Println(text.FgHiGreen.Sprint(i18n.T("removeipc_check_ok")))
+		return
+	}
+
+	fmt.Println(text.FgHiYellow.Sprint(i18n.T("removeipc_warning", setting)))
+	fmt.Println(i18n.T("removeipc_recommendation"))
 }

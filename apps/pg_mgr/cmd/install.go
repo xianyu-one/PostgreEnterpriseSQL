@@ -6,7 +6,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
@@ -42,6 +41,7 @@ func init() {
 
 func runInstall(cmd *cobra.Command) {
 	utils.EnsureRoot()
+	checkRemoveIPC()
 
 	baseDir := config.Global.BaseDir
 	installed, err := utils.GetInstalledVersions(baseDir)
@@ -131,17 +131,6 @@ func runInstall(cmd *cobra.Command) {
 		}
 		tracker.MarkAsDone()
 	}
-
-	executeStep(i18n.T("step_logind"), func() error {
-		confPath := "/etc/systemd/logind.conf"
-		_ = utils.ReplaceInFile(confPath, `(?m)^#?RemoveIPC=.*`, "RemoveIPC=no")
-		content, _ := os.ReadFile(confPath)
-		if !strings.Contains(string(content), "RemoveIPC=no") {
-			utils.AppendToFile(confPath, "\nRemoveIPC=no\n")
-		}
-		utils.RunCmd("systemctl", "daemon-reload")
-		return utils.RunCmd("systemctl", "restart", "systemd-logind")
-	})
 
 	pgBin := filepath.Join(versionPathFull, "bin", "postgres")
 	if _, err := os.Stat(pgBin); err == nil {
