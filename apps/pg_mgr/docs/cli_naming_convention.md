@@ -65,6 +65,7 @@
 | | `pg_mgr backup remove` | `pg_mgr backup uninit`, `clean` | 清除/取消实例的备份配置 |
 | | `pg_mgr backup show` | `pg_mgr backup pgrman show` | 查看备份目录中的备份集详细信息 |
 | | `pg_mgr backup run` | `pg_mgr backup pgrman run` | 手动触发全量或增量备份 |
+| | `pg_mgr backup pgrman delete DATE` | - | 删除指定开始时间及其之前、不再被后续增量备份依赖的备份集；`pg_rman` 会保留恢复必需的最新全量备份，`DATE` 格式为 `YYYY-MM-DD HH:MM:SS` |
 | **归档管理** | `pg_mgr archive show` | `pg_mgr archive status` | 查看实例的 WAL 归档配置与状态 |
 | | `pg_mgr archive enable`| - | 开启实例的 WAL 归档功能 |
 | | `pg_mgr archive disable`| - | 关闭实例的 `pg_mgr` WAL 归档设置 |
@@ -141,4 +142,3 @@
 4. **外部命令使用边界**：
    - 仅在必须调用 PostgreSQL 核心二进制工具（如 `initdb`, `pg_ctl`, `pg_rman`, `psql`）或 Linux 系统服务管理工具（如 `systemctl`）时允许使用 `exec.Command`。
    - 所有通用系统操作（文件/目录处理、进程探测、信号传递、用户状态判断）必须采用纯 Go 原生 API 实现。
-

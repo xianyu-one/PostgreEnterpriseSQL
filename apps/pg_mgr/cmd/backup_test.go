@@ -33,6 +33,59 @@ func TestGetCronExpr(t *testing.T) {
 	}
 }
 
+func TestValidatePgrmanBackupDate(t *testing.T) {
+	validDates := []string{
+		"2026-07-25 09:08:07",
+		"2024-02-29 23:59:59",
+	}
+	for _, date := range validDates {
+		if err := validatePgrmanBackupDate(date); err != nil {
+			t.Errorf("expected %q to be valid, got %v", date, err)
+		}
+	}
+
+	invalidDates := []string{
+		"2026-07-25",
+		"2026/07/25 09:08:07",
+		"2026-02-29 09:08:07",
+		"2026-07-25 24:00:00",
+		"2026-07-25 09:08:07 extra",
+	}
+	for _, date := range invalidDates {
+		if err := validatePgrmanBackupDate(date); err == nil {
+			t.Errorf("expected %q to be invalid", date)
+		}
+	}
+}
+
+func TestBuildPgrmanDeleteCommand(t *testing.T) {
+	meta := config.InstanceMeta{
+		DataDir: "/data/instance one",
+		Pgrman: &config.PgrmanConfig{
+			Tool:      "pgrman",
+			BackupDir: "/backup/instance one's",
+		},
+	}
+
+	got := buildPgrmanDeleteCommand(meta, "2026-07-25 09:08:07")
+	want := "'pg_rman' delete '2026-07-25 09:08:07' -B '/backup/instance one'\"'\"'s' -D '/data/instance one'"
+	if got != want {
+		t.Errorf("unexpected delete command:\nwant: %s\n got: %s", want, got)
+	}
+}
+
+func TestPgrmanDeleteCommandRegistration(t *testing.T) {
+	if pgrmanDeleteCmd.Parent() != pgrmanCmd {
+		t.Fatal("expected delete command to be registered under backup pgrman")
+	}
+	if pgrmanDeleteCmd.Args == nil {
+		t.Fatal("expected delete command to require a DATE argument")
+	}
+	if pgrmanDeleteCmd.Flag("instance") == nil {
+		t.Fatal("expected delete command to provide --instance")
+	}
+}
+
 func TestRunBackupList(t *testing.T) {
 	oldRootCheck := ensureRootFunc
 	ensureRootFunc = func() {}
@@ -237,5 +290,3 @@ func TestRunPgrmanEditMigration(t *testing.T) {
 		t.Errorf("expected backup.ini to be migrated to new backup directory")
 	}
 }
-
-

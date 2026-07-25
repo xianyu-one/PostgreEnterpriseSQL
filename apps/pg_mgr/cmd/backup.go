@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -33,7 +35,6 @@ var (
 	pgrmanEditIncrCron  string
 	pgrmanEditMigrate   bool
 )
-
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
@@ -84,9 +85,17 @@ var pgrmanRunCmd = &cobra.Command{
 	Run:   func(cmd *cobra.Command, args []string) { runPgrmanRun(cmd) },
 }
 
+var pgrmanDeleteCmd = &cobra.Command{
+	Use:   "delete DATE",
+	Short: i18n.T("pgrman_delete_desc"),
+	Args:  cobra.ExactArgs(1),
+	Run:   func(cmd *cobra.Command, args []string) { runPgrmanDelete(args[0]) },
+}
+
 func init() {
 	pgrmanShowCmd.Flags().StringVarP(&pgrmanInstance, "instance", "i", "", "Instance name")
 	pgrmanRunCmd.Flags().StringVarP(&pgrmanInstance, "instance", "i", "", "Instance name")
+	pgrmanDeleteCmd.Flags().StringVarP(&pgrmanInstance, "instance", "i", "", "Instance name")
 	pgrmanRunCmd.Flags().StringVarP(&pgrmanMode, "mode", "m", "full", "Backup mode (full or incremental)")
 
 	pgrmanEditCmd.Flags().StringVarP(&pgrmanInstance, "instance", "i", "", "Instance name")
@@ -101,7 +110,6 @@ func init() {
 	pgrmanEditCmd.Flags().StringVar(&pgrmanEditIncrCron, "incr-cron", "", "Incremental backup Crontab schedule")
 	pgrmanEditCmd.Flags().BoolVarP(&pgrmanEditMigrate, "migrate", "m", false, "Migrate existing backup files to the new directory")
 
-
 	// Autocomplete for instance flag
 	compFunc := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		var list []string
@@ -112,9 +120,10 @@ func init() {
 	}
 	pgrmanShowCmd.RegisterFlagCompletionFunc("instance", compFunc)
 	pgrmanRunCmd.RegisterFlagCompletionFunc("instance", compFunc)
+	pgrmanDeleteCmd.RegisterFlagCompletionFunc("instance", compFunc)
 	pgrmanEditCmd.RegisterFlagCompletionFunc("instance", compFunc)
 
-	pgrmanCmd.AddCommand(pgrmanInitCmd, pgrmanUninitCmd, pgrmanEditCmd, pgrmanShowCmd, pgrmanRunCmd)
+	pgrmanCmd.AddCommand(pgrmanInitCmd, pgrmanUninitCmd, pgrmanEditCmd, pgrmanShowCmd, pgrmanRunCmd, pgrmanDeleteCmd)
 	backupCmd.AddCommand(pgrmanCmd, backupListCmd, pgrmanInitCmd, pgrmanUninitCmd, pgrmanEditCmd, pgrmanShowCmd, pgrmanRunCmd)
 	RootCmd.AddCommand(backupCmd)
 }
@@ -506,6 +515,78 @@ func runPgrmanRun(cmd *cobra.Command) {
 	}
 }
 
+func validatePgrmanBackupDate(date string) error {
+	if _, err := time.Parse("2006-01-02 15:04:05", date); err != nil {
+		return errors.New(i18n.T("err_invalid_backup_date"))
+	}
+	return nil
+}
+
+func buildPgrmanDeleteCommand(meta config.InstanceMeta, date string) string {
+	return fmt.Sprintf("%s delete %s -B %s -D %s",
+		shellQuote(getPgrmanBin(meta)),
+		shellQuote(date),
+		shellQuote(meta.Pgrman.BackupDir),
+		shellQuote(meta.DataDir))
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func runPgrmanDelete(date string) {
+	if err := validatePgrmanBackupDate(date); err != nil {
+		fmt.Println(text.FgHiRed.Sprint(err))
+		return
+	}
+
+	instName := pgrmanInstance
+	if instName == "" {
+		var configured []string
+		for name, meta := range config.Global.Instances {
+			if meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman" {
+				configured = append(configured, name)
+			}
+		}
+		if len(configured) == 0 {
+			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_configured_instances")))
+			return
+		}
+		instName = utils.PromptInput(i18n.T("prompt_backup_inst"), configured[0])
+	}
+
+	meta, ok := config.Global.Instances[instName]
+	if !ok {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", instName)))
+		return
+	}
+	if meta.Pgrman == nil || meta.Pgrman.Tool != "pgrman" {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_backup_config", instName)))
+		return
+	}
+	ensureInstancePermission(instName)
+
+	deleteCmdStr := buildPgrmanDeleteCommand(meta, date)
+	execCmdStr := utils.BuildInstanceCmd(meta, deleteCmdStr)
+	currUser, _ := utils.GetCurrentOSUser()
+	var execCmd *exec.Cmd
+	if currUser == meta.User {
+		execCmd = exec.Command("bash", "-c", execCmdStr)
+	} else {
+		execCmd = exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
+	}
+	execCmd.Stdin = os.Stdin
+	execCmd.Stdout = os.Stdout
+	execCmd.Stderr = os.Stderr
+
+	fmt.Printf("%s\n", i18n.T("pgrman_delete_start", date, instName))
+	if err := execCmd.Run(); err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		return
+	}
+	fmt.Println(text.FgHiGreen.Sprint(i18n.T("pgrman_delete_success", date)))
+}
+
 func runBackupList() {
 	out, _ := exec.Command("systemctl", "is-active", "pg_mgr.service").Output()
 	statusStr := strings.TrimSpace(string(out))
@@ -725,7 +806,6 @@ func runPgrmanEdit(cmd *cobra.Command) {
 		_ = os.Chown(arcLogPath, uid, gid)
 	}
 
-
 	pgrmanBin := getPgrmanBin(meta)
 	initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)
 	execCmdStr := utils.BuildInstanceCmd(meta, initCmdStr)
@@ -770,4 +850,3 @@ func runPgrmanEdit(cmd *cobra.Command) {
 
 	fmt.Println(text.FgHiGreen.Sprint(i18n.T("pgrman_edit_success", selectedInst)))
 }
-
