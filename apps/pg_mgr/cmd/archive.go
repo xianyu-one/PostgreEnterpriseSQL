@@ -167,7 +167,12 @@ func runArchiveStatus(instanceName string) {
 func runArchiveEnable(instanceName string) {
 	if instanceName == "" {
 		if !archiveSilent {
-			instanceName = utils.PromptInput(i18n.T("prompt_inst"), "default")
+			selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+			if err != nil {
+				fmt.Println(text.FgHiRed.Sprint(err))
+				return
+			}
+			instanceName = selected
 		} else {
 			instanceName = "default"
 		}
@@ -200,7 +205,7 @@ func runArchiveEnable(instanceName string) {
 		choice := utils.PromptInput("Select configuration mode [1: Directory, 2: Command]", "1")
 		if choice == "1" {
 			defaultDir := filepath.Join(config.Global.BaseDir, "archive", instanceName)
-			dir := utils.PromptInput(i18n.T("prompt_archive_dir"), defaultDir)
+			dir := utils.PromptPath(i18n.T("prompt_archive_dir"), defaultDir)
 			targetDir = filepath.Clean(dir)
 			newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", targetDir)
 		} else {
@@ -275,7 +280,6 @@ func runArchiveEnable(instanceName string) {
 
 	oldMode, _ := utils.GetPostgresqlConfParam(confPath, "archive_mode")
 
-
 	if err := utils.UpdatePostgresqlConfParam(confPath, "archive_mode", "on"); err != nil {
 		fmt.Printf("Failed to update archive_mode in %s: %v\n", confPath, err)
 		os.Exit(1)
@@ -321,7 +325,12 @@ func runArchiveEnable(instanceName string) {
 func runArchiveDisable(instanceName string) {
 	if instanceName == "" {
 		if !archiveSilent {
-			instanceName = utils.PromptInput(i18n.T("prompt_inst"), "default")
+			selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+			if err != nil {
+				fmt.Println(text.FgHiRed.Sprint(err))
+				return
+			}
+			instanceName = selected
 		} else {
 			instanceName = "default"
 		}

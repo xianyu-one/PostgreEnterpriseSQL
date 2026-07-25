@@ -5,16 +5,20 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/chzyer/readline"
 	"github.com/jedib0t/go-pretty/v6/text"
+	"golang.org/x/term"
 
 	"pg_mgr/internal/config"
 )
@@ -36,6 +40,128 @@ func PromptConfirm(label string) bool {
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(strings.ToLower(input))
 	return input == "y" || input == "yes"
+}
+
+// PromptSelect asks the user to select a numbered item. The returned index is zero-based.
+func PromptSelect(label string, itemCount, defaultIndex int) (int, error) {
+	if itemCount == 0 {
+		return -1, errors.New("no selectable items")
+	}
+	if defaultIndex < 0 || defaultIndex >= itemCount {
+		defaultIndex = 0
+	}
+	for {
+		value := PromptInput(label, strconv.Itoa(defaultIndex+1))
+		index, err := strconv.Atoi(value)
+		if err == nil && index >= 1 && index <= itemCount {
+			return index - 1, nil
+		}
+		fmt.Printf("%s\n", text.FgHiRed.Sprintf("Please enter a number between 1 and %d.", itemCount))
+	}
+}
+
+// PromptPath provides filesystem completion when stdin is an interactive terminal.
+func PromptPath(label, defaultVal string) string {
+	prompt := fmt.Sprintf("%s [%s]: ", text.FgCyan.Sprint(label), text.FgGreen.Sprint(defaultVal))
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return PromptInput(label, defaultVal)
+	}
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          prompt,
+		AutoComplete:    pathCompleter{},
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+		HistoryLimit:    -1,
+	})
+	if err != nil {
+		return PromptInput(label, defaultVal)
+	}
+	defer rl.Close()
+	value, err := rl.Readline()
+	if err != nil || strings.TrimSpace(value) == "" {
+		return defaultVal
+	}
+	return expandHome(strings.TrimSpace(value))
+}
+
+// PromptNewPassword reads a password without echo and requires confirmation.
+func PromptNewPassword(label, confirmLabel, mismatchMessage string) (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		first, err := readSecret(reader, label)
+		if err != nil {
+			return "", err
+		}
+		second, err := readSecret(reader, confirmLabel)
+		if err != nil {
+			return "", err
+		}
+		if first == second {
+			return first, nil
+		}
+		fmt.Println(text.FgHiRed.Sprint(mismatchMessage))
+	}
+}
+
+func readSecret(reader *bufio.Reader, label string) (string, error) {
+	fmt.Printf("%s: ", text.FgCyan.Sprint(label))
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		value, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		return string(value), err
+	}
+	value, err := reader.ReadString('\n')
+	return strings.TrimRight(value, "\r\n"), err
+}
+
+type pathCompleter struct{}
+
+func (pathCompleter) Do(line []rune, pos int) ([][]rune, int) {
+	typed := string(line[:pos])
+	expanded := expandHome(typed)
+	dir, prefix := filepath.Split(expanded)
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, 0
+	}
+	var candidates [][]rune
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		suffix := strings.TrimPrefix(entry.Name(), prefix)
+		if entry.IsDir() {
+			suffix += string(os.PathSeparator)
+		}
+		candidates = append(candidates, []rune(suffix))
+	}
+	return candidates, len([]rune(prefix))
+}
+
+func expandHome(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
+}
+
+// ReadSelection is exposed for tests and non-terminal callers that need the same validation.
+func ReadSelection(reader io.Reader, itemCount int) (int, error) {
+	value, err := bufio.NewReader(reader).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return -1, err
+	}
+	index, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || index < 1 || index > itemCount {
+		return -1, fmt.Errorf("selection must be between 1 and %d", itemCount)
+	}
+	return index - 1, nil
 }
 
 func ReplaceInFile(filepath string, pattern string, replacement string) error {

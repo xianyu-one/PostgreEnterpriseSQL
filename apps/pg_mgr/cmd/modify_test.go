@@ -212,4 +212,3 @@ func TestModifyInstanceDataDirMigration(t *testing.T) {
 		t.Errorf("expected postgresql.conf to exist in newDataDir")
 	}
 }
-

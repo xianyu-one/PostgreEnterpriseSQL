@@ -238,4 +238,3 @@ func ChangeInstanceOwnership(instanceName string, meta config.InstanceMeta, newD
 
 	return nil
 }
-

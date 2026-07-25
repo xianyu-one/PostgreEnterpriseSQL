@@ -382,7 +382,7 @@ func detectOldServiceFiles(target process.PgProcess) []string {
 
 func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 	if dataDir == "" {
-		dataDir = utils.PromptInput(i18n.T("prompt_data_dir"), "")
+		dataDir = utils.PromptPath(i18n.T("prompt_data_dir"), "")
 	}
 	if dataDir == "" {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_data_dir_required")))
@@ -455,7 +455,7 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 	}
 
 	if binPath == "" {
-		binPath = utils.PromptInput(i18n.T("prompt_bin_path"), detectedBinPath)
+		binPath = utils.PromptPath(i18n.T("prompt_bin_path"), detectedBinPath)
 	}
 	if binPath == "" {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_bin_path_required")))

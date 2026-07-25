@@ -38,15 +38,19 @@ func init() {
 }
 
 func runUninstall() {
-	utils.EnsureInstancePermission(Config.InstanceName)
-
 	if !Config.Silent {
-		Config.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), Config.InstanceName)
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		Config.InstanceName = selected
 		if !utils.PromptConfirm(i18n.T("confirm_uninst", Config.InstanceName)) {
 			fmt.Println(i18n.T("abort"))
 			return
 		}
 	}
+	utils.EnsureInstancePermission(Config.InstanceName)
 
 	meta, ok := config.Global.Instances[Config.InstanceName]
 	if !ok {

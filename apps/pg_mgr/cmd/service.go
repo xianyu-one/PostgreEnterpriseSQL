@@ -87,9 +87,16 @@ func init() {
 }
 
 func runServiceCmd(action string, args []string) {
-	instanceName := "default"
+	instanceName := ""
 	if len(args) > 0 {
 		instanceName = args[0]
+	} else {
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		instanceName = selected
 	}
 	manageService(action, instanceName)
 }

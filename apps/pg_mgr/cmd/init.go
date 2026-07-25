@@ -25,8 +25,8 @@ func init() {
 func runInit() {
 	utils.EnsureRoot()
 
-	baseDir := utils.PromptInput(i18n.T("prompt_global_base"), config.Global.BaseDir)
-	logDir := utils.PromptInput(i18n.T("prompt_global_log_dir"), config.Global.LogDir)
+	baseDir := utils.PromptPath(i18n.T("prompt_global_base"), config.Global.BaseDir)
+	logDir := utils.PromptPath(i18n.T("prompt_global_log_dir"), config.Global.LogDir)
 	logLevel := utils.PromptInput(i18n.T("prompt_global_log_level"), config.Global.LogLevel)
 
 	logLevelLower := strings.ToLower(strings.TrimSpace(logLevel))

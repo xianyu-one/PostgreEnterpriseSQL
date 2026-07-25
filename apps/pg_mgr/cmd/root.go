@@ -3,13 +3,18 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 
+	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/utils"
 )
 
 type InstallConfig struct {
@@ -66,4 +71,52 @@ func init() {
 
 	RootCmd.AddCommand(InstanceCmd)
 	RootCmd.AddCommand(PkgCmd)
+}
+
+func promptInstalledVersion(label string, versions []utils.PGVersion, defaultIndex int) (utils.PGVersion, error) {
+	if len(versions) == 0 {
+		return utils.PGVersion{}, fmt.Errorf("no installed PostgreSQL versions")
+	}
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"#", i18n.T("tbl_ver_version"), i18n.T("tbl_ver_path")})
+	for i, version := range versions {
+		t.AppendRow(table.Row{i + 1, version.Raw, filepath.Join(config.Global.BaseDir, strconv.Itoa(version.Major), strconv.Itoa(version.Minor))})
+	}
+	t.Render()
+	index, err := utils.PromptSelect(label, len(versions), defaultIndex)
+	if err != nil {
+		return utils.PGVersion{}, err
+	}
+	return versions[index], nil
+}
+
+func promptInstance(label string, filter func(string, config.InstanceMeta) bool) (string, error) {
+	names := make([]string, 0, len(config.Global.Instances))
+	for name, meta := range config.Global.Instances {
+		if filter == nil || filter(name, meta) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "", fmt.Errorf("no available instances")
+	}
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"#", i18n.T("tbl_inst"), i18n.T("tbl_user"), i18n.T("tbl_port"), i18n.T("tbl_datadir"), i18n.T("tbl_ver_path")})
+	for i, name := range names {
+		meta := config.Global.Instances[name]
+		t.AppendRow(table.Row{i + 1, name, meta.User, meta.Port, meta.DataDir, filepath.Dir(filepath.Dir(meta.BinPath))})
+	}
+	t.Render()
+	index, err := utils.PromptSelect(label, len(names), 0)
+	if err != nil {
+		return "", err
+	}
+	return names[index], nil
+}
+
+func hasPgrmanConfig(_ string, meta config.InstanceMeta) bool {
+	return meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman"
 }

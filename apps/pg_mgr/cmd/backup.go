@@ -183,15 +183,11 @@ func runPgrmanInit() {
 		os.Exit(1)
 	}
 
-	// List instances and ask user to choose
-	fmt.Println("Available instances:")
-	var instNames []string
-	for name := range config.Global.Instances {
-		fmt.Printf(" - %s\n", name)
-		instNames = append(instNames, name)
+	selectedInst, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(err))
+		return
 	}
-
-	selectedInst := utils.PromptInput(i18n.T("prompt_backup_inst"), instNames[0])
 	meta, ok := config.Global.Instances[selectedInst]
 	if !ok {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", selectedInst)))
@@ -245,9 +241,9 @@ func runPgrmanInit() {
 	}
 
 	// Interactive Wizard
-	backupDir := utils.PromptInput(i18n.T("prompt_backup_dir"), defaultBackupDir)
-	srvLogPath := utils.PromptInput(i18n.T("prompt_srv_log"), defaultSrvLog)
-	arcLogPath := utils.PromptInput(i18n.T("prompt_arc_log"), defaultArcLog)
+	backupDir := utils.PromptPath(i18n.T("prompt_backup_dir"), defaultBackupDir)
+	srvLogPath := utils.PromptPath(i18n.T("prompt_srv_log"), defaultSrvLog)
+	arcLogPath := utils.PromptPath(i18n.T("prompt_arc_log"), defaultArcLog)
 	compressData := utils.PromptInput(i18n.T("prompt_compress"), defaultCompress)
 
 	keepArc := promptInt(i18n.T("prompt_keep_arc"), defaultKeepArc)
@@ -346,12 +342,11 @@ func runPgrmanUninit() {
 		os.Exit(1)
 	}
 
-	fmt.Println("Available instances with backup configuration:")
-	for _, name := range configured {
-		fmt.Printf(" - %s\n", name)
+	selectedInst, err := promptInstance(i18n.T("prompt_select_instance"), hasPgrmanConfig)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(err))
+		return
 	}
-
-	selectedInst := utils.PromptInput(i18n.T("prompt_backup_inst"), configured[0])
 	meta, ok := config.Global.Instances[selectedInst]
 	if !ok || meta.Pgrman == nil || meta.Pgrman.Tool != "pgrman" {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_backup_config", selectedInst)))
@@ -385,7 +380,7 @@ func runPgrmanUninit() {
 		}
 	}
 
-	err := config.SaveInstancePgrmanConfig(selectedInst, nil)
+	err = config.SaveInstancePgrmanConfig(selectedInst, nil)
 	if err != nil {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
 		os.Exit(1)
@@ -407,7 +402,12 @@ func runPgrmanShow() {
 			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_instances")))
 			os.Exit(1)
 		}
-		instName = utils.PromptInput(i18n.T("prompt_backup_inst"), configured[0])
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), hasPgrmanConfig)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		instName = selected
 	}
 
 	meta, ok := config.Global.Instances[instName]
@@ -452,7 +452,12 @@ func runPgrmanRun(cmd *cobra.Command) {
 			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_instances")))
 			os.Exit(1)
 		}
-		instName = utils.PromptInput(i18n.T("prompt_backup_inst"), configured[0])
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), hasPgrmanConfig)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		instName = selected
 	}
 
 	meta, ok := config.Global.Instances[instName]
@@ -552,7 +557,12 @@ func runPgrmanDelete(date string) {
 			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_no_configured_instances")))
 			return
 		}
-		instName = utils.PromptInput(i18n.T("prompt_backup_inst"), configured[0])
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), hasPgrmanConfig)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		instName = selected
 	}
 
 	meta, ok := config.Global.Instances[instName]
@@ -673,11 +683,12 @@ func runPgrmanEdit(cmd *cobra.Command) {
 
 	selectedInst := pgrmanInstance
 	if selectedInst == "" {
-		fmt.Println("Available instances with backup configuration:")
-		for _, name := range configured {
-			fmt.Printf(" - %s\n", name)
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), hasPgrmanConfig)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
 		}
-		selectedInst = utils.PromptInput(i18n.T("prompt_backup_inst"), configured[0])
+		selectedInst = selected
 	}
 
 	meta, ok := config.Global.Instances[selectedInst]
@@ -747,9 +758,9 @@ func runPgrmanEdit(cmd *cobra.Command) {
 			}
 		}
 	} else {
-		backupDir = utils.PromptInput(i18n.T("prompt_backup_dir"), backupDir)
-		srvLogPath = utils.PromptInput(i18n.T("prompt_srv_log"), srvLogPath)
-		arcLogPath = utils.PromptInput(i18n.T("prompt_arc_log"), arcLogPath)
+		backupDir = utils.PromptPath(i18n.T("prompt_backup_dir"), backupDir)
+		srvLogPath = utils.PromptPath(i18n.T("prompt_srv_log"), srvLogPath)
+		arcLogPath = utils.PromptPath(i18n.T("prompt_arc_log"), arcLogPath)
 		compressData = utils.PromptInput(i18n.T("prompt_compress"), compressData)
 
 		keepArc = promptInt(i18n.T("prompt_keep_arc"), keepArc)

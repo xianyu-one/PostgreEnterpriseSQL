@@ -310,4 +310,3 @@ func TestPgrmanUpgradeRename(t *testing.T) {
 		t.Errorf("expected new backup dir to be empty, got %d entries", len(entries))
 	}
 }
-

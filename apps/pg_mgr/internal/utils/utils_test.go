@@ -399,3 +399,36 @@ func TestCopyDirToSubdirectory(t *testing.T) {
 		t.Errorf("expected %s not to exist, but it exists", infiniteSub)
 	}
 }
+
+func TestReadSelection(t *testing.T) {
+	index, err := ReadSelection(strings.NewReader("2\n"), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index != 1 {
+		t.Fatalf("index = %d, want 1", index)
+	}
+	if _, err := ReadSelection(strings.NewReader("4\n"), 3); err == nil {
+		t.Fatal("expected an out-of-range selection error")
+	}
+}
+
+func TestPathCompleterCompletesDirectoriesAndFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tempDir, "data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "database.conf"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	input := []rune(filepath.Join(tempDir, "dat"))
+	candidates, _ := (pathCompleter{}).Do(input, len(input))
+	var values []string
+	for _, candidate := range candidates {
+		values = append(values, string(candidate))
+	}
+	joined := strings.Join(values, ",")
+	if !strings.Contains(joined, "a"+string(os.PathSeparator)) || !strings.Contains(joined, "abase.conf") {
+		t.Fatalf("unexpected path completion candidates: %q", values)
+	}
+}

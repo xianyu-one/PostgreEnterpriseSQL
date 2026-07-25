@@ -17,12 +17,12 @@ import (
 )
 
 var (
-	modifyPort             string
-	modifyBinPath          string
-	modifyDataDir          string
-	modifyOSUser           string
-	modifyMigrate          bool
-	modifyCheckRoot        = func() bool { return utils.IsRoot() }
+	modifyPort            string
+	modifyBinPath         string
+	modifyDataDir         string
+	modifyOSUser          string
+	modifyMigrate         bool
+	modifyCheckRoot       = func() bool { return utils.IsRoot() }
 	modifyCheckPermission = func(instanceName string) bool {
 		if modifyCheckRoot() {
 			return true
@@ -39,8 +39,19 @@ var modifyCmd = &cobra.Command{
 	Use:     "modify [instance_name]",
 	Aliases: []string{"configure", "edit"},
 	Short:   i18n.T("modify_desc"),
-	Args:    cobra.ExactArgs(1),
-	Run:     func(cmd *cobra.Command, args []string) { runModify(args[0]) },
+	Args:    cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 1 {
+			runModify(args[0])
+			return
+		}
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		runModify(selected)
+	},
 }
 
 func init() {
@@ -163,7 +174,6 @@ func runModify(instanceName string) {
 		}
 		_ = utils.UpdatePgrc(pgrcPath, envs)
 	}
-
 
 	serviceChanged := (modifyBinPath != "" || modifyDataDir != "" || modifyOSUser != "")
 	if serviceChanged {

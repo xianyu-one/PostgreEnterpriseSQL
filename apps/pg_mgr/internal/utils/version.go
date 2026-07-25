@@ -233,4 +233,3 @@ func DetectAndVerifyTarVersion(tarPath string) (major string, minor string, ok b
 	}
 	return "", "", false, fmt.Errorf("could not parse version output from binary: %s", outStr)
 }
-

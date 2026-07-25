@@ -89,7 +89,12 @@ func getVersionFromBinPath(baseDir, binPath, osUser string) (utils.PGVersion, er
 
 func runUpgrade() {
 	if !UpgConfig.Silent {
-		UpgConfig.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), UpgConfig.InstanceName)
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		UpgConfig.InstanceName = selected
 	}
 
 	utils.EnsureInstancePermission(UpgConfig.InstanceName)

@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
@@ -53,14 +52,6 @@ func runCreateInstance() error {
 	baseDir := config.Global.BaseDir
 	installed, err := utils.GetInstalledVersions(baseDir)
 	if err == nil && len(installed) > 0 {
-		t := table.NewWriter()
-		t.SetOutputMirror(os.Stdout)
-		t.AppendHeader(table.Row{i18n.T("tbl_ver_version"), i18n.T("tbl_ver_path")})
-		for _, v := range installed {
-			t.AppendRow(table.Row{v.Raw, filepath.Join(baseDir, strconv.Itoa(v.Major), strconv.Itoa(v.Minor))})
-		}
-		t.Render()
-
 		recommended := installed[len(installed)-1]
 		Config.MajorVersion = strconv.Itoa(recommended.Major)
 		Config.MinorVersion = strconv.Itoa(recommended.Minor)
@@ -69,21 +60,34 @@ func runCreateInstance() error {
 	if !Config.Silent {
 		Config.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), Config.InstanceName)
 		Config.OSUser = utils.PromptInput(i18n.T("prompt_os_user"), Config.OSUser)
-		Config.MajorVersion = utils.PromptInput(i18n.T("prompt_major"), Config.MajorVersion)
-		Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
+		if len(installed) > 0 {
+			selected, err := promptInstalledVersion(i18n.T("prompt_select_version"), installed, len(installed)-1)
+			if err != nil {
+				return err
+			}
+			Config.MajorVersion = strconv.Itoa(selected.Major)
+			Config.MinorVersion = strconv.Itoa(selected.Minor)
+		}
 
 		defaultDataDir := filepath.Join(baseDir, "instances", Config.InstanceName)
 		currentDefault := Config.DataDir
 		if currentDefault == "" {
 			currentDefault = defaultDataDir
 		}
-		Config.DataDir = utils.PromptInput(i18n.T("prompt_inst_data_dir"), currentDefault)
+		Config.DataDir = utils.PromptPath(i18n.T("prompt_inst_data_dir"), currentDefault)
 
 		portStr := utils.PromptInput(i18n.T("prompt_port"), strconv.Itoa(Config.Port))
 		Config.Port, _ = strconv.Atoi(portStr)
 		Config.DBUser = utils.PromptInput(i18n.T("prompt_db_user"), Config.DBUser)
 		Config.SystemctlAlias = utils.PromptConfirm(i18n.T("prompt_systemctl_alias"))
-		Config.Password = utils.PromptInput(i18n.T("prompt_pass"), Config.Password)
+		Config.Password, err = utils.PromptNewPassword(
+			i18n.T("prompt_pass"),
+			i18n.T("prompt_pass_confirm"),
+			i18n.T("err_password_mismatch"),
+		)
+		if err != nil {
+			return err
+		}
 	} else {
 		if Config.DataDir == "" {
 			Config.DataDir = filepath.Join(baseDir, "instances", Config.InstanceName)
@@ -347,8 +351,8 @@ func buildInitDBCommand(versionPathFull, pgCtl, dataDir, dbUser string) string {
 
 func buildInitialPasswordCommand(versionPathFull, psql string, port int, dbUser, password string) string {
 	password = strings.ReplaceAll(password, "'", "''")
-	return fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -p %d -d postgres -c \"ALTER USER %s WITH PASSWORD '%s';\"",
-		versionPathFull, psql, port, dbUser, password)
+	return fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -p %d -d postgres -U %s -c \"ALTER USER %s WITH PASSWORD '%s';\"",
+		versionPathFull, psql, port, dbUser, dbUser, password)
 }
 
 func validDatabaseUser(name string) bool {

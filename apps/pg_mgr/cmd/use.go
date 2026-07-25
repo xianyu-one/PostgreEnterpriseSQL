@@ -18,8 +18,19 @@ var useCmd = &cobra.Command{
 	Use:     "use [instance_name]",
 	Aliases: []string{"switch"},
 	Short:   i18n.T("use_desc"),
-	Args:    cobra.ExactArgs(1),
-	Run:     func(cmd *cobra.Command, args []string) { runUse(args[0]) },
+	Args:    cobra.MaximumNArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 1 {
+			runUse(args[0])
+			return
+		}
+		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		runUse(selected)
+	},
 }
 
 func init() {

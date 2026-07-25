@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
@@ -50,7 +49,7 @@ func runInstallPkg(cmd *cobra.Command) {
 	checkRemoveIPC()
 
 	if !Config.Silent {
-		Config.TarPath = utils.PromptInput(i18n.T("prompt_tar"), Config.TarPath)
+		Config.TarPath = utils.PromptPath(i18n.T("prompt_tar"), Config.TarPath)
 
 		detectedMajor, detectedMinor, detected, vErr := utils.DetectAndVerifyTarVersion(Config.TarPath)
 		if vErr != nil && !detected {
@@ -71,20 +70,17 @@ func runInstallPkg(cmd *cobra.Command) {
 			baseDir := config.Global.BaseDir
 			installed, err := utils.GetInstalledVersions(baseDir)
 			if err == nil && len(installed) > 0 {
-				t := table.NewWriter()
-				t.SetOutputMirror(os.Stdout)
-				t.AppendHeader(table.Row{i18n.T("tbl_ver_version"), i18n.T("tbl_ver_path")})
-				for _, v := range installed {
-					t.AppendRow(table.Row{v.Raw, filepath.Join(baseDir, strconv.Itoa(v.Major), strconv.Itoa(v.Minor))})
+				selected, selectErr := promptInstalledVersion(i18n.T("prompt_select_version"), installed, len(installed)-1)
+				if selectErr != nil {
+					fmt.Println(text.FgHiRed.Sprint(selectErr))
+					return
 				}
-				t.Render()
-
-				recommended := installed[len(installed)-1]
-				Config.MajorVersion = strconv.Itoa(recommended.Major)
-				Config.MinorVersion = strconv.Itoa(recommended.Minor)
+				Config.MajorVersion = strconv.Itoa(selected.Major)
+				Config.MinorVersion = strconv.Itoa(selected.Minor)
+			} else {
+				Config.MajorVersion = utils.PromptInput(i18n.T("prompt_major"), Config.MajorVersion)
+				Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
 			}
-			Config.MajorVersion = utils.PromptInput(i18n.T("prompt_major"), Config.MajorVersion)
-			Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
 		}
 	} else {
 		detectedMajor, detectedMinor, detected, _ := utils.DetectAndVerifyTarVersion(Config.TarPath)

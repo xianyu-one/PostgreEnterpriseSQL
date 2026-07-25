@@ -121,6 +121,9 @@ func TestCreateCommandsUsePostgresDatabaseIdentity(t *testing.T) {
 	if !strings.Contains(passwordCmd, " -d postgres ") {
 		t.Fatalf("password command must explicitly connect to the postgres database: %s", passwordCmd)
 	}
+	if !strings.Contains(passwordCmd, " -U postgres ") {
+		t.Fatalf("password command must explicitly connect as the database superuser: %s", passwordCmd)
+	}
 	if !strings.Contains(passwordCmd, "ALTER USER postgres") {
 		t.Fatalf("password command must update the postgres role: %s", passwordCmd)
 	}
@@ -211,6 +214,9 @@ func TestCreateCommandsSupportCustomDatabaseSuperuser(t *testing.T) {
 		t.Fatalf("custom database superuser missing from initdb command: %s", initCmd)
 	}
 	passwordCmd := buildInitialPasswordCommand("/pg", "/pg/bin/psql", 5432, "dbadmin", "secret")
+	if !strings.Contains(passwordCmd, " -U dbadmin ") {
+		t.Fatalf("custom database superuser missing from psql connection: %s", passwordCmd)
+	}
 	if !strings.Contains(passwordCmd, "ALTER USER dbadmin") {
 		t.Fatalf("custom database superuser missing from password command: %s", passwordCmd)
 	}

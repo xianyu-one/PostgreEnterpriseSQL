@@ -8,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/jedib0t/go-pretty/v6/progress"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
@@ -50,7 +49,7 @@ func runInstall(cmd *cobra.Command) {
 	}
 
 	if !Config.Silent {
-		Config.TarPath = utils.PromptInput(i18n.T("prompt_tar"), Config.TarPath)
+		Config.TarPath = utils.PromptPath(i18n.T("prompt_tar"), Config.TarPath)
 		Config.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), Config.InstanceName)
 		Config.OSUser = utils.PromptInput(i18n.T("prompt_os_user"), Config.OSUser)
 
@@ -61,20 +60,17 @@ func runInstall(cmd *cobra.Command) {
 			fmt.Printf("Auto-detected version from tarball: %s.%s\n", detectedMajor, detectedMinor)
 		} else {
 			if len(installed) > 0 {
-				t := table.NewWriter()
-				t.SetOutputMirror(os.Stdout)
-				t.AppendHeader(table.Row{i18n.T("tbl_ver_version"), i18n.T("tbl_ver_path")})
-				for _, v := range installed {
-					t.AppendRow(table.Row{v.Raw, filepath.Join(baseDir, strconv.Itoa(v.Major), strconv.Itoa(v.Minor))})
+				selected, selectErr := promptInstalledVersion(i18n.T("prompt_select_version"), installed, len(installed)-1)
+				if selectErr != nil {
+					fmt.Println(text.FgHiRed.Sprint(selectErr))
+					return
 				}
-				t.Render()
-
-				recommended := installed[len(installed)-1]
-				Config.MajorVersion = strconv.Itoa(recommended.Major)
-				Config.MinorVersion = strconv.Itoa(recommended.Minor)
+				Config.MajorVersion = strconv.Itoa(selected.Major)
+				Config.MinorVersion = strconv.Itoa(selected.Minor)
+			} else {
+				Config.MajorVersion = utils.PromptInput(i18n.T("prompt_major"), Config.MajorVersion)
+				Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
 			}
-			Config.MajorVersion = utils.PromptInput(i18n.T("prompt_major"), Config.MajorVersion)
-			Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
 		}
 
 		defaultDataDir := filepath.Join(baseDir, "instances", Config.InstanceName)
@@ -82,11 +78,19 @@ func runInstall(cmd *cobra.Command) {
 		if currentDefault == "" {
 			currentDefault = defaultDataDir
 		}
-		Config.DataDir = utils.PromptInput(i18n.T("prompt_inst_data_dir"), currentDefault)
+		Config.DataDir = utils.PromptPath(i18n.T("prompt_inst_data_dir"), currentDefault)
 
 		portStr := utils.PromptInput(i18n.T("prompt_port"), strconv.Itoa(Config.Port))
 		Config.Port, _ = strconv.Atoi(portStr)
-		Config.Password = utils.PromptInput(i18n.T("prompt_pass"), Config.Password)
+		Config.Password, err = utils.PromptNewPassword(
+			i18n.T("prompt_pass"),
+			i18n.T("prompt_pass_confirm"),
+			i18n.T("err_password_mismatch"),
+		)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
 	} else {
 		detectedMajor, detectedMinor, detected := utils.DetectVersionFromTar(Config.TarPath)
 		if detected {
