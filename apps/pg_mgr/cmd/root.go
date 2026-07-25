@@ -13,15 +13,17 @@ import (
 )
 
 type InstallConfig struct {
-	TarPath      string
-	InstanceName string
-	MajorVersion string
-	MinorVersion string
-	Port         int
-	Password     string
-	Silent       bool
-	DataDir      string
-	OSUser       string
+	TarPath        string
+	InstanceName   string
+	MajorVersion   string
+	MinorVersion   string
+	Port           int
+	Password       string
+	Silent         bool
+	DataDir        string
+	OSUser         string
+	DBUser         string
+	SystemctlAlias bool
 }
 
 var Config InstallConfig
