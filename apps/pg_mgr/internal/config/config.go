@@ -9,32 +9,35 @@ import (
 )
 
 type PgrmanConfig struct {
-	Tool           string `mapstructure:"tool" yaml:"tool,omitempty"`
-	BackupDir      string `mapstructure:"backup_dir" yaml:"backup_dir,omitempty"`
-	SrvLogPath     string `mapstructure:"srv_log_path" yaml:"srv_log_path,omitempty"`
-	ArcLogPath     string `mapstructure:"arc_log_path" yaml:"arc_log_path,omitempty"`
-	CompressData   string `mapstructure:"compress_data" yaml:"compress_data,omitempty"`
-	KeepArcLogDays int    `mapstructure:"keep_arclog_days" yaml:"keep_arclog_days,omitempty"`
-	KeepSrvLogDays int    `mapstructure:"keep_srvlog_days" yaml:"keep_srvlog_days,omitempty"`
-	KeepDataDays   int    `mapstructure:"keep_data_days" yaml:"keep_data_days,omitempty"`
-	FullBackupCron string `mapstructure:"full_backup_cron" yaml:"full_backup_cron,omitempty"`
-	IncrBackupCron string `mapstructure:"incr_backup_cron" yaml:"incr_backup_cron,omitempty"`
-	FullBackupDay  int    `mapstructure:"full_backup_day" yaml:"full_backup_day,omitempty"` // Legacy: 0-6 (0=Sunday)
-	FullBackupHour int    `mapstructure:"full_backup_hour" yaml:"full_backup_hour,omitempty"`
-	FullBackupMin  int    `mapstructure:"full_backup_min" yaml:"full_backup_min,omitempty"`
-	IncrBackupHour int    `mapstructure:"incr_backup_hour" yaml:"incr_backup_hour,omitempty"`
-	IncrBackupMin  int    `mapstructure:"incr_backup_min" yaml:"incr_backup_min,omitempty"`
+	Tool            string `mapstructure:"tool" yaml:"tool,omitempty"`
+	BackupDir       string `mapstructure:"backup_dir" yaml:"backup_dir,omitempty"`
+	SrvLogPath      string `mapstructure:"srv_log_path" yaml:"srv_log_path,omitempty"`
+	ArcLogPath      string `mapstructure:"arc_log_path" yaml:"arc_log_path,omitempty"`
+	CompressData    string `mapstructure:"compress_data" yaml:"compress_data,omitempty"`
+	KeepArcLogDays  int    `mapstructure:"keep_arclog_days" yaml:"keep_arclog_days,omitempty"`
+	KeepSrvLogDays  int    `mapstructure:"keep_srvlog_days" yaml:"keep_srvlog_days,omitempty"`
+	KeepDataDays    int    `mapstructure:"keep_data_days" yaml:"keep_data_days,omitempty"`
+	FullBackupCron  string `mapstructure:"full_backup_cron" yaml:"full_backup_cron,omitempty"`
+	IncrBackupCron  string `mapstructure:"incr_backup_cron" yaml:"incr_backup_cron,omitempty"`
+	ScheduleEnabled *bool  `mapstructure:"schedule_enabled" yaml:"schedule_enabled,omitempty"`
+	FullBackupDay   int    `mapstructure:"full_backup_day" yaml:"full_backup_day,omitempty"` // Legacy: 0-6 (0=Sunday)
+	FullBackupHour  int    `mapstructure:"full_backup_hour" yaml:"full_backup_hour,omitempty"`
+	FullBackupMin   int    `mapstructure:"full_backup_min" yaml:"full_backup_min,omitempty"`
+	IncrBackupHour  int    `mapstructure:"incr_backup_hour" yaml:"incr_backup_hour,omitempty"`
+	IncrBackupMin   int    `mapstructure:"incr_backup_min" yaml:"incr_backup_min,omitempty"`
 }
 
 type InstanceMeta struct {
-	User       string        `mapstructure:"user" yaml:"user"`
-	DataDir    string        `mapstructure:"data_dir" yaml:"data_dir"`
-	OldDataDir string        `mapstructure:"datadir" yaml:"datadir,omitempty"`
-	BinPath    string        `mapstructure:"bin_path" yaml:"bin_path"`
-	OldBinPath string        `mapstructure:"binpath" yaml:"binpath,omitempty"`
-	Port       string        `mapstructure:"port" yaml:"port"`
-	Pgrman     *PgrmanConfig `mapstructure:"pgrman" yaml:"pgrman,omitempty"`
-	OldBackup  *PgrmanConfig `mapstructure:"backup" yaml:"backup,omitempty"`
+	User         string        `mapstructure:"user" yaml:"user"`
+	DataDir      string        `mapstructure:"data_dir" yaml:"data_dir"`
+	OldDataDir   string        `mapstructure:"datadir" yaml:"datadir,omitempty"`
+	BinPath      string        `mapstructure:"bin_path" yaml:"bin_path"`
+	OldBinPath   string        `mapstructure:"binpath" yaml:"binpath,omitempty"`
+	Port         string        `mapstructure:"port" yaml:"port"`
+	DatabaseUser string        `mapstructure:"database_user" yaml:"database_user,omitempty"`
+	DatabaseName string        `mapstructure:"database_name" yaml:"database_name,omitempty"`
+	Pgrman       *PgrmanConfig `mapstructure:"pgrman" yaml:"pgrman,omitempty"`
+	OldBackup    *PgrmanConfig `mapstructure:"backup" yaml:"backup,omitempty"`
 }
 
 type GlobalConfig struct {
@@ -129,6 +132,14 @@ func SaveGlobalConfig(baseDir, logDir, logLevel string) error {
 }
 
 func SaveInstanceToRegistry(name, user, dataDir, binPath, port string) error {
+	return SaveInstanceToRegistryWithDatabaseUser(name, user, dataDir, binPath, port, "")
+}
+
+func SaveInstanceToRegistryWithDatabaseUser(name, user, dataDir, binPath, port, databaseUser string) error {
+	return SaveInstanceToRegistryWithDatabaseConnection(name, user, dataDir, binPath, port, databaseUser, "")
+}
+
+func SaveInstanceToRegistryWithDatabaseConnection(name, user, dataDir, binPath, port, databaseUser, databaseName string) error {
 	os.MkdirAll(filepath.Dir(ConfigFilePath), 0755)
 	if Global.Instances == nil {
 		Global.Instances = make(map[string]InstanceMeta)
@@ -137,14 +148,42 @@ func SaveInstanceToRegistry(name, user, dataDir, binPath, port string) error {
 	var pgrman *PgrmanConfig
 	if exist, ok := Global.Instances[name]; ok {
 		pgrman = exist.Pgrman
+		if databaseUser == "" {
+			databaseUser = exist.DatabaseUser
+		}
+		if databaseName == "" {
+			databaseName = exist.DatabaseName
+		}
 	}
 	Global.Instances[name] = InstanceMeta{
-		User:    user,
-		DataDir: dataDir,
-		BinPath: binPath,
-		Port:    port,
-		Pgrman:  pgrman,
+		User:         user,
+		DataDir:      dataDir,
+		BinPath:      binPath,
+		Port:         port,
+		DatabaseUser: databaseUser,
+		DatabaseName: databaseName,
+		Pgrman:       pgrman,
 	}
+	return writeConfig()
+}
+
+func SaveInstanceDatabaseUser(name, databaseUser string) error {
+	return SaveInstanceDatabaseConnection(name, databaseUser, "")
+}
+
+func SaveInstanceDatabaseConnection(name, databaseUser, databaseName string) error {
+	if Global.Instances == nil {
+		return fmt.Errorf("no instances registered")
+	}
+	meta, ok := Global.Instances[name]
+	if !ok {
+		return fmt.Errorf("instance %s not found", name)
+	}
+	meta.DatabaseUser = databaseUser
+	if databaseName != "" {
+		meta.DatabaseName = databaseName
+	}
+	Global.Instances[name] = meta
 	return writeConfig()
 }
 

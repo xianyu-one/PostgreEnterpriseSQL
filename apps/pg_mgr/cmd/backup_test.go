@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"pg_mgr/internal/config"
+	"pg_mgr/internal/database"
 )
 
 func TestGetCronExpr(t *testing.T) {
@@ -30,6 +31,38 @@ func TestGetCronExpr(t *testing.T) {
 	}
 	if expr := getIncrCronExpr(bkCustom); expr != "15 4 * * *" {
 		t.Errorf("expected custom incr cron '15 4 * * *', got '%s'", expr)
+	}
+}
+
+func TestBackupScheduleEnabledIsBackwardCompatible(t *testing.T) {
+	if !isBackupScheduleEnabled(&config.PgrmanConfig{}) {
+		t.Fatal("legacy configuration without schedule_enabled must remain enabled")
+	}
+	disabled := false
+	if isBackupScheduleEnabled(&config.PgrmanConfig{ScheduleEnabled: &disabled}) {
+		t.Fatal("explicitly disabled schedule must remain disabled")
+	}
+}
+
+func TestBackupCatalogNeedsInit(t *testing.T) {
+	tempDir := t.TempDir()
+	oldDir := filepath.Join(tempDir, "old")
+	if needsInit, err := backupCatalogNeedsInit(oldDir, oldDir); err != nil || needsInit {
+		t.Fatalf("unchanged catalog should not be initialized: needsInit=%v err=%v", needsInit, err)
+	}
+
+	newDir := filepath.Join(tempDir, "new")
+	if needsInit, err := backupCatalogNeedsInit(oldDir, newDir); err != nil || !needsInit {
+		t.Fatalf("missing new catalog should be initialized: needsInit=%v err=%v", needsInit, err)
+	}
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir, "backup.ini"), []byte("catalog"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if needsInit, err := backupCatalogNeedsInit(oldDir, newDir); err != nil || needsInit {
+		t.Fatalf("non-empty migrated catalog should not be initialized: needsInit=%v err=%v", needsInit, err)
 	}
 }
 
@@ -71,6 +104,21 @@ func TestBuildPgrmanDeleteCommand(t *testing.T) {
 	want := "'pg_rman' delete '2026-07-25 09:08:07' -B '/backup/instance one'\"'\"'s' -D '/data/instance one'"
 	if got != want {
 		t.Errorf("unexpected delete command:\nwant: %s\n got: %s", want, got)
+	}
+}
+
+func TestBuildPgRmanBackupCommandUsesDatabaseUser(t *testing.T) {
+	meta := config.InstanceMeta{
+		Port:    "51721",
+		DataDir: "/data/instance",
+		Pgrman:  &config.PgrmanConfig{BackupDir: "/backup/instance"},
+	}
+	command := buildPgRmanBackupCommand(meta, "full", database.Connection{User: "dbadmin", Database: "appdb"})
+	if !strings.Contains(command, "-U 'dbadmin'") {
+		t.Fatalf("backup command does not specify database user: %s", command)
+	}
+	if !strings.Contains(command, "-d 'appdb'") {
+		t.Fatalf("backup command does not specify database name: %s", command)
 	}
 }
 
@@ -152,6 +200,9 @@ func TestRunPgrmanEditFlags(t *testing.T) {
 	oldRootCheck := ensureRootFunc
 	ensureRootFunc = func() {}
 	defer func() { ensureRootFunc = oldRootCheck }()
+	oldInitRunner := runPgrmanInitForEdit
+	runPgrmanInitForEdit = func(config.InstanceMeta, string) ([]byte, error) { return nil, nil }
+	defer func() { runPgrmanInitForEdit = oldInitRunner }()
 
 	tempDir, err := os.MkdirTemp("", "pg_mgr_edit_test_*")
 	if err != nil {

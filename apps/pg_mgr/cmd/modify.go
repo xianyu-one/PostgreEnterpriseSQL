@@ -21,6 +21,8 @@ var (
 	modifyBinPath         string
 	modifyDataDir         string
 	modifyOSUser          string
+	modifyDBUser          string
+	modifyDatabaseName    string
 	modifyMigrate         bool
 	modifyCheckRoot       = func() bool { return utils.IsRoot() }
 	modifyCheckPermission = func(instanceName string) bool {
@@ -59,6 +61,8 @@ func init() {
 	modifyCmd.Flags().StringVarP(&modifyBinPath, "bin-path", "b", "", "New path to the postgres binary")
 	modifyCmd.Flags().StringVarP(&modifyDataDir, "data-dir", "d", "", "New data directory for the instance")
 	modifyCmd.Flags().StringVarP(&modifyOSUser, "os-user", "u", "", "New OS user who runs the database instance")
+	modifyCmd.Flags().StringVar(&modifyDBUser, "db-user", "", "Database superuser used for instance connections")
+	modifyCmd.Flags().StringVar(&modifyDatabaseName, "database", "", "Default database used for instance connections")
 	modifyCmd.Flags().BoolVarP(&modifyMigrate, "migrate", "m", false, "Migrate existing data directory to the new location")
 
 	compFunc := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -93,7 +97,7 @@ func runModify(instanceName string) {
 		os.Exit(1)
 	}
 
-	if modifyPort == "" && modifyBinPath == "" && modifyDataDir == "" && modifyOSUser == "" {
+	if modifyPort == "" && modifyBinPath == "" && modifyDataDir == "" && modifyOSUser == "" && modifyDBUser == "" && modifyDatabaseName == "" {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_modify_no_flags")))
 		os.Exit(1)
 	}
@@ -114,6 +118,14 @@ func runModify(instanceName string) {
 	newOSUser := meta.User
 	if modifyOSUser != "" {
 		newOSUser = modifyOSUser
+	}
+	newDBUser := meta.DatabaseUser
+	if modifyDBUser != "" {
+		newDBUser = modifyDBUser
+	}
+	newDatabaseName := meta.DatabaseName
+	if modifyDatabaseName != "" {
+		newDatabaseName = modifyDatabaseName
 	}
 
 	u, err := user.Lookup(newOSUser)
@@ -188,7 +200,7 @@ func runModify(instanceName string) {
 	}
 
 	// Save to registry
-	config.SaveInstanceToRegistry(instanceName, newOSUser, newDataDir, newBinPath, newPort)
+	config.SaveInstanceToRegistryWithDatabaseConnection(instanceName, newOSUser, newDataDir, newBinPath, newPort, newDBUser, newDatabaseName)
 
 	if restartNeeded {
 		startNewService(instanceName, newOSUser)

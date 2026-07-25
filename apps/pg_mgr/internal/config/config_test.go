@@ -132,7 +132,7 @@ func TestNewConfigFieldsAndBackup(t *testing.T) {
 	}
 
 	// 3. Test saving instance pgrman config
-	err = SaveInstanceToRegistry("testdb", "postgres", "/data", "/bin/postgres", "5432")
+	err = SaveInstanceToRegistryWithDatabaseConnection("testdb", "postgres", "/data", "/bin/postgres", "5432", "dbadmin", "appdb")
 	if err != nil {
 		t.Fatalf("SaveInstanceToRegistry failed: %v", err)
 	}
@@ -171,5 +171,11 @@ func TestNewConfigFieldsAndBackup(t *testing.T) {
 	}
 	if inst.Pgrman.Tool != "pgrman" || inst.Pgrman.BackupDir != "/backup" || inst.Pgrman.KeepArcLogDays != 5 || inst.Pgrman.FullBackupCron != "0 2 * * 0" {
 		t.Errorf("pgrman config value mismatch: %+v", inst.Pgrman)
+	}
+	if inst.DatabaseUser != "dbadmin" {
+		t.Errorf("database user mismatch: got %q", inst.DatabaseUser)
+	}
+	if inst.DatabaseName != "appdb" {
+		t.Errorf("database name mismatch: got %q", inst.DatabaseName)
 	}
 }

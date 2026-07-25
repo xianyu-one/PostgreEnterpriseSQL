@@ -230,7 +230,7 @@ source %s
 
 	executeStep(i18n.T("step_initdb"), func() error {
 		pgCtl := filepath.Join(versionPathFull, "bin", "pg_ctl")
-		cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -D %s initdb", versionPathFull, pgCtl, dataDir)
+		cmd := buildInitDBCommand(versionPathFull, pgCtl, dataDir, "postgres")
 		return utils.RunAsUser(osUser, cmd)
 	})
 
@@ -305,13 +305,13 @@ WantedBy=%s
 
 	executeStep(i18n.T("step_password"), func() error {
 		psql := filepath.Join(versionPathFull, "bin", "psql")
-		cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -p %d -c \"ALTER USER postgres WITH PASSWORD '%s';\"", versionPathFull, psql, Config.Port, Config.Password)
+		cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -p %d -d postgres -U postgres -c \"ALTER USER postgres WITH PASSWORD '%s';\"", versionPathFull, psql, Config.Port, Config.Password)
 		return utils.RunAsUser(osUser, cmd)
 	})
 
 	// Add to Global Registry
 	pgBin = filepath.Join(versionPathFull, "bin", "postgres")
-	config.SaveInstanceToRegistry(Config.InstanceName, osUser, dataDir, pgBin, strconv.Itoa(Config.Port))
+	config.SaveInstanceToRegistryWithDatabaseConnection(Config.InstanceName, osUser, dataDir, pgBin, strconv.Itoa(Config.Port), "postgres", "postgres")
 
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))

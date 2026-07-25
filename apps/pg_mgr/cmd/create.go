@@ -334,7 +334,7 @@ WantedBy=%s
 
 	// Add to Global Registry
 	pgBin = filepath.Join(versionPathFull, "bin", "postgres")
-	if err := config.SaveInstanceToRegistry(Config.InstanceName, osUser, dataDir, pgBin, strconv.Itoa(Config.Port)); err != nil {
+	if err := config.SaveInstanceToRegistryWithDatabaseConnection(Config.InstanceName, osUser, dataDir, pgBin, strconv.Itoa(Config.Port), Config.DBUser, "postgres"); err != nil {
 		return err
 	}
 

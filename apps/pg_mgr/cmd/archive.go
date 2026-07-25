@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
+	"pg_mgr/internal/database"
 	"pg_mgr/internal/i18n"
 	"pg_mgr/internal/utils"
 )
@@ -315,7 +316,7 @@ func runArchiveEnable(instanceName string) {
 			fmt.Println(text.FgGreen.Sprint("PostgreSQL configuration reloaded."))
 		}
 
-		restartArchiverBackend(meta)
+		restartArchiverBackend(instanceName, meta)
 	}
 
 	fmt.Println(text.FgGreen.Sprint(i18n.T("archive_enable_success", instanceName)))
@@ -387,14 +388,18 @@ func runArchiveDisable(instanceName string) {
 			fmt.Println(text.FgGreen.Sprint("PostgreSQL configuration reloaded."))
 		}
 
-		restartArchiverBackend(meta)
+		restartArchiverBackend(instanceName, meta)
 	}
 
 	fmt.Println(text.FgGreen.Sprint(i18n.T("archive_disable_success", instanceName)))
 	fmt.Println(text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
 }
 
-func restartArchiverBackend(meta config.InstanceMeta) {
+func restartArchiverBackend(instanceName string, meta config.InstanceMeta) {
+	connection, err := database.Resolve(instanceName, meta, true)
+	if err != nil {
+		return
+	}
 	binDir := utils.GetInstanceBinDir(meta)
 	psqlBin := "psql"
 	if binDir != "" {
@@ -405,7 +410,7 @@ func restartArchiverBackend(meta config.InstanceMeta) {
 	}
 
 	sqlCmd := "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'archiver';"
-	cmd := fmt.Sprintf("%s -p %s -d postgres -c %q", psqlBin, meta.Port, sqlCmd)
+	cmd := fmt.Sprintf("%s -p %s -d %s -U %s -c %q", psqlBin, meta.Port, connection.Database, connection.User, sqlCmd)
 
 	out, err := utils.RunAsUserWithOutputForInstance(meta.User, meta, cmd)
 	if err == nil && !strings.Contains(out, "FATAL") && !strings.Contains(out, "ERROR") {

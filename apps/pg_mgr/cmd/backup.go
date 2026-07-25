@@ -17,23 +17,29 @@ import (
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
+	"pg_mgr/internal/database"
 	"pg_mgr/internal/i18n"
 	"pg_mgr/internal/utils"
 )
 
 var (
-	pgrmanInstance      string
-	pgrmanMode          string
-	pgrmanEditBackupDir string
-	pgrmanEditSrvLog    string
-	pgrmanEditArcLog    string
-	pgrmanEditCompress  string
-	pgrmanEditKeepArc   int
-	pgrmanEditKeepSrv   int
-	pgrmanEditKeepData  int
-	pgrmanEditFullCron  string
-	pgrmanEditIncrCron  string
-	pgrmanEditMigrate   bool
+	pgrmanInstance       string
+	pgrmanMode           string
+	pgrmanEditBackupDir  string
+	pgrmanEditSrvLog     string
+	pgrmanEditArcLog     string
+	pgrmanEditCompress   string
+	pgrmanEditKeepArc    int
+	pgrmanEditKeepSrv    int
+	pgrmanEditKeepData   int
+	pgrmanEditFullCron   string
+	pgrmanEditIncrCron   string
+	pgrmanEditMigrate    bool
+	pgrmanEditSchedule   bool
+	runPgrmanInitForEdit = func(meta config.InstanceMeta, command string) ([]byte, error) {
+		execCmdStr := utils.BuildInstanceCmd(meta, command)
+		return exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr).CombinedOutput()
+	}
 )
 
 var backupCmd = &cobra.Command{
@@ -108,6 +114,7 @@ func init() {
 	pgrmanEditCmd.Flags().IntVar(&pgrmanEditKeepData, "keep-data-days", 0, "Retention days for backup data (KEEP_DATA_DAYS)")
 	pgrmanEditCmd.Flags().StringVar(&pgrmanEditFullCron, "full-cron", "", "Full backup Crontab schedule")
 	pgrmanEditCmd.Flags().StringVar(&pgrmanEditIncrCron, "incr-cron", "", "Incremental backup Crontab schedule")
+	pgrmanEditCmd.Flags().BoolVar(&pgrmanEditSchedule, "schedule", true, "Enable or disable scheduled backups")
 	pgrmanEditCmd.Flags().BoolVarP(&pgrmanEditMigrate, "migrate", "m", false, "Migrate existing backup files to the new directory")
 
 	// Autocomplete for instance flag
@@ -146,6 +153,14 @@ func getIncrCronExpr(bk *config.PgrmanConfig) string {
 		return bk.IncrBackupCron
 	}
 	return fmt.Sprintf("%d %d * * *", bk.IncrBackupMin, bk.IncrBackupHour)
+}
+
+func isBackupScheduleEnabled(bk *config.PgrmanConfig) bool {
+	return bk == nil || bk.ScheduleEnabled == nil || *bk.ScheduleEnabled
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func promptCron(label string, defaultVal string) string {
@@ -211,6 +226,7 @@ func runPgrmanInit() {
 	defaultKeepData := 14
 	defaultFullCron := "0 2 * * 0"
 	defaultIncrCron := "0 3 * * *"
+	scheduleEnabled := true
 
 	// Pre-fill from existing pgrman config if available
 	if meta.Pgrman != nil {
@@ -238,6 +254,7 @@ func runPgrmanInit() {
 		}
 		defaultFullCron = getFullCronExpr(bk)
 		defaultIncrCron = getIncrCronExpr(bk)
+		scheduleEnabled = isBackupScheduleEnabled(bk)
 	}
 
 	// Interactive Wizard
@@ -250,8 +267,13 @@ func runPgrmanInit() {
 	keepSrv := promptInt(i18n.T("prompt_keep_srv"), defaultKeepSrv)
 	keepData := promptInt(i18n.T("prompt_keep_data"), defaultKeepData)
 
-	fullCron := promptCron(i18n.T("prompt_full_cron"), defaultFullCron)
-	incrCron := promptCron(i18n.T("prompt_incr_cron"), defaultIncrCron)
+	scheduleEnabled = utils.PromptBool(i18n.T("prompt_backup_schedule"), scheduleEnabled)
+	fullCron := defaultFullCron
+	incrCron := defaultIncrCron
+	if scheduleEnabled {
+		fullCron = promptCron(i18n.T("prompt_full_cron"), defaultFullCron)
+		incrCron = promptCron(i18n.T("prompt_incr_cron"), defaultIncrCron)
+	}
 
 	// Validate user ID and group ID
 	u, err := user.Lookup(meta.User)
@@ -308,16 +330,17 @@ func runPgrmanInit() {
 
 	// Save to config
 	pgrmanConfig := &config.PgrmanConfig{
-		Tool:           "pgrman",
-		BackupDir:      backupDir,
-		SrvLogPath:     srvLogPath,
-		ArcLogPath:     arcLogPath,
-		CompressData:   compressData,
-		KeepArcLogDays: keepArc,
-		KeepSrvLogDays: keepSrv,
-		KeepDataDays:   keepData,
-		FullBackupCron: fullCron,
-		IncrBackupCron: incrCron,
+		Tool:            "pgrman",
+		BackupDir:       backupDir,
+		SrvLogPath:      srvLogPath,
+		ArcLogPath:      arcLogPath,
+		CompressData:    compressData,
+		KeepArcLogDays:  keepArc,
+		KeepSrvLogDays:  keepSrv,
+		KeepDataDays:    keepData,
+		FullBackupCron:  fullCron,
+		IncrBackupCron:  incrCron,
+		ScheduleEnabled: boolPtr(scheduleEnabled),
 	}
 
 	err = config.SaveInstancePgrmanConfig(selectedInst, pgrmanConfig)
@@ -470,6 +493,11 @@ func runPgrmanRun(cmd *cobra.Command) {
 		os.Exit(1)
 	}
 	ensureInstancePermission(instName)
+	connection, err := database.Resolve(instName, meta, true)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(err))
+		return
+	}
 
 	var mode string
 	if cmd != nil && cmd.Flags().Changed("mode") {
@@ -497,9 +525,7 @@ func runPgrmanRun(cmd *cobra.Command) {
 		}
 	}
 
-	pgrmanBin := getPgrmanBin(meta)
-	runCmdStr := fmt.Sprintf("%s backup -p %s -D %s --backup-mode=%s --with-serverlog -B %s && %s validate -B %s",
-		pgrmanBin, meta.Port, meta.DataDir, mode, meta.Pgrman.BackupDir, pgrmanBin, meta.Pgrman.BackupDir)
+	runCmdStr := buildPgRmanBackupCommand(meta, mode, connection)
 
 	fmt.Printf("Running manual backup (mode: %s) for instance '%s' as user '%s'...\n", mode, instName, meta.User)
 	execCmdStr := utils.BuildInstanceCmd(meta, runCmdStr)
@@ -512,12 +538,26 @@ func runPgrmanRun(cmd *cobra.Command) {
 	}
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
-	err := execCmd.Run()
+	err = execCmd.Run()
 	if err != nil {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
 	} else {
 		fmt.Println(text.FgHiGreen.Sprint(i18n.T("done")))
 	}
+}
+
+func buildPgRmanBackupCommand(meta config.InstanceMeta, mode string, connection database.Connection) string {
+	pgrmanBin := getPgrmanBin(meta)
+	return fmt.Sprintf("%s backup -p %s -U %s -d %s -D %s --backup-mode=%s --with-serverlog -B %s && %s validate -B %s",
+		shellQuote(pgrmanBin),
+		shellQuote(meta.Port),
+		shellQuote(connection.User),
+		shellQuote(connection.Database),
+		shellQuote(meta.DataDir),
+		shellQuote(mode),
+		shellQuote(meta.Pgrman.BackupDir),
+		shellQuote(pgrmanBin),
+		shellQuote(meta.Pgrman.BackupDir))
 }
 
 func validatePgrmanBackupDate(date string) error {
@@ -632,13 +672,21 @@ func runBackupList() {
 			if toolName == "pgrman" {
 				toolName = "pg_rman"
 			}
+			fullCron := getFullCronExpr(meta.Pgrman)
+			incrCron := getIncrCronExpr(meta.Pgrman)
+			status := text.FgHiGreen.Sprint(i18n.T("status_configured"))
+			if !isBackupScheduleEnabled(meta.Pgrman) {
+				fullCron = i18n.T("status_schedule_disabled")
+				incrCron = i18n.T("status_schedule_disabled")
+				status = text.FgHiYellow.Sprint(i18n.T("status_manual_only"))
+			}
 			t.AppendRow(table.Row{
 				text.FgHiCyan.Sprint(name),
 				toolName,
 				meta.Pgrman.BackupDir,
-				getFullCronExpr(meta.Pgrman),
-				getIncrCronExpr(meta.Pgrman),
-				text.FgHiGreen.Sprint(i18n.T("status_configured")),
+				fullCron,
+				incrCron,
+				status,
 			})
 		} else {
 			t.AppendRow(table.Row{
@@ -707,7 +755,8 @@ func runPgrmanEdit(cmd *cobra.Command) {
 		cmd.Flags().Changed("keep-srv-days") ||
 		cmd.Flags().Changed("keep-data-days") ||
 		cmd.Flags().Changed("full-cron") ||
-		cmd.Flags().Changed("incr-cron")
+		cmd.Flags().Changed("incr-cron") ||
+		cmd.Flags().Changed("schedule")
 
 	backupDir := bk.BackupDir
 	srvLogPath := bk.SrvLogPath
@@ -718,6 +767,7 @@ func runPgrmanEdit(cmd *cobra.Command) {
 	keepData := bk.KeepDataDays
 	fullCron := getFullCronExpr(bk)
 	incrCron := getIncrCronExpr(bk)
+	scheduleEnabled := isBackupScheduleEnabled(bk)
 
 	if hasFlags {
 		if cmd.Flags().Changed("backup-dir") {
@@ -757,6 +807,9 @@ func runPgrmanEdit(cmd *cobra.Command) {
 				os.Exit(1)
 			}
 		}
+		if cmd.Flags().Changed("schedule") {
+			scheduleEnabled = pgrmanEditSchedule
+		}
 	} else {
 		backupDir = utils.PromptPath(i18n.T("prompt_backup_dir"), backupDir)
 		srvLogPath = utils.PromptPath(i18n.T("prompt_srv_log"), srvLogPath)
@@ -767,8 +820,11 @@ func runPgrmanEdit(cmd *cobra.Command) {
 		keepSrv = promptInt(i18n.T("prompt_keep_srv"), keepSrv)
 		keepData = promptInt(i18n.T("prompt_keep_data"), keepData)
 
-		fullCron = promptCron(i18n.T("prompt_full_cron"), fullCron)
-		incrCron = promptCron(i18n.T("prompt_incr_cron"), incrCron)
+		scheduleEnabled = utils.PromptBool(i18n.T("prompt_backup_schedule"), scheduleEnabled)
+		if scheduleEnabled {
+			fullCron = promptCron(i18n.T("prompt_full_cron"), fullCron)
+			incrCron = promptCron(i18n.T("prompt_incr_cron"), incrCron)
+		}
 	}
 
 	newBackupDir := filepath.Clean(backupDir)
@@ -803,6 +859,11 @@ func runPgrmanEdit(cmd *cobra.Command) {
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
 
+	needsCatalogInit, err := backupCatalogNeedsInit(oldBackupDirClean, backupDir)
+	if err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		os.Exit(1)
+	}
 	err = os.MkdirAll(backupDir, 0755)
 	if err != nil {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
@@ -817,15 +878,13 @@ func runPgrmanEdit(cmd *cobra.Command) {
 		_ = os.Chown(arcLogPath, uid, gid)
 	}
 
-	pgrmanBin := getPgrmanBin(meta)
-	initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)
-	execCmdStr := utils.BuildInstanceCmd(meta, initCmdStr)
-	execCmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
-	out, err := execCmd.CombinedOutput()
-	if err != nil {
-		outStr := string(out)
-		if !strings.Contains(strings.ToLower(outStr), "already initialized") {
-			fmt.Printf("pg_rman init note: %s\n", outStr)
+	if needsCatalogInit {
+		pgrmanBin := getPgrmanBin(meta)
+		initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)
+		out, initErr := runPgrmanInitForEdit(meta, initCmdStr)
+		if initErr != nil {
+			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_pgrman_init_failed", strings.TrimSpace(string(out)))))
+			return
 		}
 	}
 
@@ -841,16 +900,17 @@ func runPgrmanEdit(cmd *cobra.Command) {
 	_ = os.Chown(iniPath, uid, gid)
 
 	updatedConfig := &config.PgrmanConfig{
-		Tool:           "pgrman",
-		BackupDir:      backupDir,
-		SrvLogPath:     srvLogPath,
-		ArcLogPath:     arcLogPath,
-		CompressData:   compressData,
-		KeepArcLogDays: keepArc,
-		KeepSrvLogDays: keepSrv,
-		KeepDataDays:   keepData,
-		FullBackupCron: fullCron,
-		IncrBackupCron: incrCron,
+		Tool:            "pgrman",
+		BackupDir:       backupDir,
+		SrvLogPath:      srvLogPath,
+		ArcLogPath:      arcLogPath,
+		CompressData:    compressData,
+		KeepArcLogDays:  keepArc,
+		KeepSrvLogDays:  keepSrv,
+		KeepDataDays:    keepData,
+		FullBackupCron:  fullCron,
+		IncrBackupCron:  incrCron,
+		ScheduleEnabled: boolPtr(scheduleEnabled),
 	}
 
 	err = config.SaveInstancePgrmanConfig(selectedInst, updatedConfig)
@@ -860,4 +920,18 @@ func runPgrmanEdit(cmd *cobra.Command) {
 	}
 
 	fmt.Println(text.FgHiGreen.Sprint(i18n.T("pgrman_edit_success", selectedInst)))
+}
+
+func backupCatalogNeedsInit(oldBackupDir, newBackupDir string) (bool, error) {
+	if oldBackupDir == newBackupDir {
+		return false, nil
+	}
+	entries, err := os.ReadDir(newBackupDir)
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
 }

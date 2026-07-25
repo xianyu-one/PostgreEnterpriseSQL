@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
+	"pg_mgr/internal/database"
 	"pg_mgr/internal/i18n"
 	"pg_mgr/internal/logger"
 	"pg_mgr/internal/utils"
@@ -229,6 +230,9 @@ func runDaemonRun() {
 			if bk.Tool != "pgrman" {
 				continue
 			}
+			if !isBackupScheduleEnabled(bk) {
+				continue
+			}
 
 			fullCron := getFullCronExpr(bk)
 			incrCron := getIncrCronExpr(bk)
@@ -279,9 +283,11 @@ func runPgRmanBackup(name string, instance config.InstanceMeta, mode string) err
 		return fmt.Errorf("no pgrman backup configuration for instance %s", name)
 	}
 
-	pgrmanBin := getPgrmanBin(instance)
-	cmdStr := fmt.Sprintf("%s backup -p %s -D %s --backup-mode=%s --with-serverlog -B %s && %s validate -B %s",
-		pgrmanBin, instance.Port, instance.DataDir, mode, bk.BackupDir, pgrmanBin, bk.BackupDir)
+	connection, err := database.Resolve(name, instance, false)
+	if err != nil {
+		return err
+	}
+	cmdStr := buildPgRmanBackupCommand(instance, mode, connection)
 	fullCmdStr := utils.BuildInstanceCmd(instance, cmdStr)
 	logger.Info("Executing backup command: %s as user %s", fullCmdStr, instance.User)
 

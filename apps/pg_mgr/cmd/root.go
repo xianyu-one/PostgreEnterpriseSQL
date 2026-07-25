@@ -104,10 +104,18 @@ func promptInstance(label string, filter func(string, config.InstanceMeta) bool)
 	}
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
-	t.AppendHeader(table.Row{"#", i18n.T("tbl_inst"), i18n.T("tbl_user"), i18n.T("tbl_port"), i18n.T("tbl_datadir"), i18n.T("tbl_ver_path")})
+	t.AppendHeader(table.Row{"#", i18n.T("tbl_inst"), i18n.T("tbl_user"), i18n.T("tbl_db_user"), i18n.T("tbl_database_name"), i18n.T("tbl_port"), i18n.T("tbl_datadir"), i18n.T("tbl_ver_path")})
 	for i, name := range names {
 		meta := config.Global.Instances[name]
-		t.AppendRow(table.Row{i + 1, name, meta.User, meta.Port, meta.DataDir, filepath.Dir(filepath.Dir(meta.BinPath))})
+		databaseUser := meta.DatabaseUser
+		if databaseUser == "" {
+			databaseUser = i18n.T("status_pending_detection")
+		}
+		databaseName := meta.DatabaseName
+		if databaseName == "" {
+			databaseName = i18n.T("status_pending_detection")
+		}
+		t.AppendRow(table.Row{i + 1, name, meta.User, databaseUser, databaseName, meta.Port, meta.DataDir, filepath.Dir(filepath.Dir(meta.BinPath))})
 	}
 	t.Render()
 	index, err := utils.PromptSelect(label, len(names), 0)

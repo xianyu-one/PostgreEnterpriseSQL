@@ -42,6 +42,23 @@ func PromptConfirm(label string) bool {
 	return input == "y" || input == "yes"
 }
 
+func PromptBool(label string, defaultVal bool) bool {
+	defaultText := "y"
+	if !defaultVal {
+		defaultText = "n"
+	}
+	for {
+		value := strings.ToLower(PromptInput(label, defaultText))
+		switch value {
+		case "y", "yes":
+			return true
+		case "n", "no":
+			return false
+		}
+		fmt.Println(text.FgHiRed.Sprint("Please enter y or n."))
+	}
+}
+
 // PromptSelect asks the user to select a numbered item. The returned index is zero-based.
 func PromptSelect(label string, itemCount, defaultIndex int) (int, error) {
 	if itemCount == 0 {
