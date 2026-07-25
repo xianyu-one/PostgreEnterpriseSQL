@@ -4,4 +4,3 @@ dist/
 dev-temp-files/
 .vscode
 output/
-pg_mgr
