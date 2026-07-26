@@ -432,3 +432,17 @@ func TestPathCompleterCompletesDirectoriesAndFiles(t *testing.T) {
 		t.Fatalf("unexpected path completion candidates: %q", values)
 	}
 }
+
+func TestRunAsUserWithCombinedOutputDoesNotSuToCurrentUser(t *testing.T) {
+	currentUser, err := GetCurrentOSUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := RunAsUserWithCombinedOutput(currentUser, "printf direct-execution")
+	if err != nil {
+		t.Fatalf("command failed: %v, output: %s", err, out)
+	}
+	if out != "direct-execution" {
+		t.Fatalf("output = %q, want direct-execution", out)
+	}
+}

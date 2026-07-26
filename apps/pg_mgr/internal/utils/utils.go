@@ -288,6 +288,19 @@ func RunAsUserWithOutput(username string, cmdStr string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// RunAsUserWithCombinedOutput runs a shell command as username and returns both
+// stdout and stderr. When the caller already is username, it executes directly
+// and never invokes su (which would unnecessarily require authentication).
+func RunAsUserWithCombinedOutput(username string, cmdStr string) (string, error) {
+	currUser, err := GetCurrentOSUser()
+	if err == nil && currUser == username {
+		out, runErr := exec.Command("bash", "-c", cmdStr).CombinedOutput()
+		return string(out), runErr
+	}
+	out, runErr := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr).CombinedOutput()
+	return string(out), runErr
+}
+
 func ExtractRegexFromFile(filepath string, pattern string) string {
 	content, err := os.ReadFile(filepath)
 	if err != nil {
@@ -661,6 +674,14 @@ func RunAsUserWithOutputForInstance(username string, meta config.InstanceMeta, c
 	}
 	fullCmd := BuildInstanceCmd(meta, cmdStr)
 	return RunAsUserWithOutput(username, fullCmd)
+}
+
+func RunAsUserWithCombinedOutputForInstance(username string, meta config.InstanceMeta, cmdStr string) (string, error) {
+	if username == "" {
+		username = meta.User
+	}
+	fullCmd := BuildInstanceCmd(meta, cmdStr)
+	return RunAsUserWithCombinedOutput(username, fullCmd)
 }
 
 // isSubpathOrEqual checks whether child is equal to parent or is a subdirectory inside parent.

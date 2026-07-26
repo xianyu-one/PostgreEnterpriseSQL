@@ -37,8 +37,8 @@ var (
 	pgrmanEditMigrate    bool
 	pgrmanEditSchedule   bool
 	runPgrmanInitForEdit = func(meta config.InstanceMeta, command string) ([]byte, error) {
-		execCmdStr := utils.BuildInstanceCmd(meta, command)
-		return exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr).CombinedOutput()
+		out, err := utils.RunAsUserWithCombinedOutputForInstance(meta.User, meta, command)
+		return []byte(out), err
 	}
 )
 
@@ -301,13 +301,14 @@ func runPgrmanInit() {
 
 	// Run pg_rman init with explicit data directory -D
 	pgrmanBin := getPgrmanBin(meta)
-	initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, backupDir, meta.DataDir)
+	initCmdStr := fmt.Sprintf("%s init -B %s -D %s",
+		shellQuote(pgrmanBin),
+		shellQuote(backupDir),
+		shellQuote(meta.DataDir),
+	)
 	fmt.Printf("Initializing pg_rman in directory: %s...\n", backupDir)
-	execCmdStr := utils.BuildInstanceCmd(meta, initCmdStr)
-	cmd := exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", execCmdStr)
-	out, err := cmd.CombinedOutput()
+	outStr, err := utils.RunAsUserWithCombinedOutputForInstance(meta.User, meta, initCmdStr)
 	if err != nil {
-		outStr := string(out)
 		if strings.Contains(strings.ToLower(outStr), "already initialized") {
 			fmt.Printf("pg_rman init notice: %s\n", outStr)
 		} else {
