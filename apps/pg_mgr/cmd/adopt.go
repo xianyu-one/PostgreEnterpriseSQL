@@ -163,20 +163,17 @@ func runAdopt() {
 
 	executeStep(i18n.T("step_user"), func() error {
 		if osUser != "root" {
-			utils.RunCmd("loginctl", "enable-linger", osUser)
+			if err := utils.RunCmd("loginctl", "enable-linger", osUser); err != nil {
+				return err
+			}
 		}
 		// Ensure pkg directory permissions for target.BinPath
 		if binDir := filepath.Dir(filepath.Dir(target.BinPath)); binDir != "" && binDir != "." && binDir != "/" {
-			_ = utils.EnsurePkgPermissions(binDir)
-		}
-		// Try to fix permissions gently
-		filepath.Walk(target.DataDir, func(path string, info os.FileInfo, err error) error {
-			if err == nil {
-				os.Chown(path, uid, gid)
+			if err := utils.EnsurePkgPermissions(binDir); err != nil {
+				return err
 			}
-			return nil
-		})
-		return nil
+		}
+		return prepareAdoptDataDir(target.DataDir, uid, gid)
 	})
 
 	executeStep(i18n.T("step_pgconf"), func() error {
@@ -235,18 +232,29 @@ WantedBy=%s
 
 	executeStep(i18n.T("step_start"), func() error {
 		if osUser == "root" {
-			utils.RunCmd("systemctl", "daemon-reload")
-			utils.RunCmd("systemctl", "enable", serviceName)
+			if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
+				return err
+			}
+			if err := utils.RunCmd("systemctl", "enable", serviceName); err != nil {
+				return err
+			}
 			return utils.RunCmd("systemctl", "start", serviceName)
-		} else {
-			utils.RunAsUser(osUser, "systemctl --user daemon-reload")
-			utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName))
-			return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
 		}
+		if err := utils.RunAsUser(osUser, "systemctl --user daemon-reload"); err != nil {
+			return err
+		}
+		if err := utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName)); err != nil {
+			return err
+		}
+		return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
 	})
 
 	// Add to Global Registry
-	config.SaveInstanceToRegistry(instName, osUser, target.DataDir, target.BinPath, target.Port)
+	if err := config.SaveInstanceToRegistry(instName, osUser, target.DataDir, target.BinPath, target.Port); err != nil {
+		pw.Stop()
+		fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		return
+	}
 
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
@@ -434,34 +442,20 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
 
-	// Try to auto-detect postgres version and default bin path if not provided
-	detectedBinPath := ""
-	pgVerBytes, err := os.ReadFile(filepath.Join(dataDirClean, "PG_VERSION"))
-	if err == nil {
-		majorStr := strings.TrimSpace(string(pgVerBytes))
-		baseDir := config.Global.BaseDir
-		installed, err := utils.GetInstalledVersions(baseDir)
-		if err == nil {
-			var matchingVersions []string
-			for _, v := range installed {
-				if strconv.Itoa(v.Major) == majorStr {
-					matchingVersions = append(matchingVersions, filepath.Join(baseDir, strconv.Itoa(v.Major), strconv.Itoa(v.Minor), "bin", "postgres"))
-				}
-			}
-			if len(matchingVersions) > 0 {
-				detectedBinPath = matchingVersions[len(matchingVersions)-1]
-			}
+	if binPath == "" {
+		compatible, err := compatibleInstalledVersions(dataDirClean, config.Global.BaseDir)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
 		}
+		selected, err := promptInstalledVersion(i18n.T("prompt_select_version"), compatible, len(compatible)-1)
+		if err != nil {
+			fmt.Println(text.FgHiRed.Sprint(err))
+			return
+		}
+		binPath = postgresBinPath(config.Global.BaseDir, selected)
 	}
-
-	if binPath == "" {
-		binPath = utils.PromptPath(i18n.T("prompt_bin_path"), detectedBinPath)
-	}
-	if binPath == "" {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_bin_path_required")))
-		return
-	}
-	if _, err := os.Stat(binPath); os.IsNotExist(err) {
+	if info, err := os.Stat(binPath); err != nil || info.IsDir() {
 		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_bin_path_not_found", binPath)))
 		return
 	}
@@ -511,18 +505,16 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 
 	executeStep(i18n.T("step_user"), func() error {
 		if osUser != "root" {
-			utils.RunCmd("loginctl", "enable-linger", osUser)
+			if err := utils.RunCmd("loginctl", "enable-linger", osUser); err != nil {
+				return err
+			}
 		}
 		if binDir := filepath.Dir(filepath.Dir(binPath)); binDir != "" && binDir != "." && binDir != "/" {
-			_ = utils.EnsurePkgPermissions(binDir)
-		}
-		filepath.Walk(dataDirClean, func(path string, info os.FileInfo, err error) error {
-			if err == nil {
-				os.Chown(path, uid, gid)
+			if err := utils.EnsurePkgPermissions(binDir); err != nil {
+				return err
 			}
-			return nil
-		})
-		return nil
+		}
+		return prepareAdoptDataDir(dataDirClean, uid, gid)
 	})
 
 	executeStep(i18n.T("step_pgconf"), func() error {
@@ -581,19 +573,74 @@ WantedBy=%s
 
 	executeStep(i18n.T("step_start"), func() error {
 		if osUser == "root" {
-			utils.RunCmd("systemctl", "daemon-reload")
-			utils.RunCmd("systemctl", "enable", serviceName)
+			if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
+				return err
+			}
+			if err := utils.RunCmd("systemctl", "enable", serviceName); err != nil {
+				return err
+			}
 			return utils.RunCmd("systemctl", "start", serviceName)
-		} else {
-			utils.RunAsUser(osUser, "systemctl --user daemon-reload")
-			utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName))
-			return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
 		}
+		if err := utils.RunAsUser(osUser, "systemctl --user daemon-reload"); err != nil {
+			return err
+		}
+		if err := utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName)); err != nil {
+			return err
+		}
+		return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
 	})
 
 	// Add to Global Registry
-	config.SaveInstanceToRegistry(name, osUser, dataDirClean, binPath, port)
+	if err := config.SaveInstanceToRegistry(name, osUser, dataDirClean, binPath, port); err != nil {
+		pw.Stop()
+		fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		return
+	}
 
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+}
+
+func postgresBinPath(baseDir string, version utils.PGVersion) string {
+	return filepath.Join(baseDir, strconv.Itoa(version.Major), strconv.Itoa(version.Minor), "bin", "postgres")
+}
+
+func compatibleInstalledVersions(dataDir, baseDir string) ([]utils.PGVersion, error) {
+	versionBytes, err := os.ReadFile(filepath.Join(dataDir, "PG_VERSION"))
+	if err != nil {
+		return nil, fmt.Errorf("%s", i18n.T("err_read_pg_version", err))
+	}
+	major, err := strconv.Atoi(strings.TrimSpace(string(versionBytes)))
+	if err != nil {
+		return nil, fmt.Errorf("%s", i18n.T("err_invalid_pg_version", strings.TrimSpace(string(versionBytes))))
+	}
+	installed, err := utils.GetInstalledVersions(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	compatible := make([]utils.PGVersion, 0, len(installed))
+	for _, version := range installed {
+		if version.Major == major {
+			compatible = append(compatible, version)
+		}
+	}
+	if len(compatible) == 0 {
+		return nil, fmt.Errorf("%s", i18n.T("err_no_compatible_version", major))
+	}
+	return compatible, nil
+}
+
+func prepareAdoptDataDir(dataDir string, uid, gid int) error {
+	if err := os.Chmod(dataDir, 0700); err != nil {
+		return fmt.Errorf("chmod %s to 0700: %w", dataDir, err)
+	}
+	return filepath.Walk(dataDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := os.Chown(path, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
+		return nil
+	})
 }

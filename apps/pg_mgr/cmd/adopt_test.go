@@ -3,8 +3,6 @@ package cmd
 import (
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 
 	"pg_mgr/internal/config"
@@ -42,6 +40,13 @@ func TestDetectUnstartedProperties(t *testing.T) {
 	if err := os.WriteFile(mockBinPath, []byte("mock binary"), 0755); err != nil {
 		t.Fatalf("failed to write mock binary: %v", err)
 	}
+	incompatibleBinDir := filepath.Join(baseDir, "17", "10", "bin")
+	if err := os.MkdirAll(incompatibleBinDir, 0755); err != nil {
+		t.Fatalf("failed to create incompatible bin dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(incompatibleBinDir, "postgres"), []byte("mock binary"), 0755); err != nil {
+		t.Fatalf("failed to write incompatible mock binary: %v", err)
+	}
 
 	// 2. Create PG_VERSION in dataDir
 	if err := os.WriteFile(filepath.Join(dataDir, "PG_VERSION"), []byte("16\n"), 0644); err != nil {
@@ -58,28 +63,15 @@ port = 5433
 		t.Fatalf("failed to write postgresql.conf: %v", err)
 	}
 
-	// Test version detection logic
-	detectedBinPath := ""
-	pgVerBytes, err := os.ReadFile(filepath.Join(dataDir, "PG_VERSION"))
+	// Test compatible installed-version detection.
+	compatible, err := compatibleInstalledVersions(dataDir, baseDir)
 	if err != nil {
-		t.Fatalf("failed to read PG_VERSION: %v", err)
+		t.Fatalf("compatibleInstalledVersions failed: %v", err)
 	}
-	majorStr := strings.TrimSpace(string(pgVerBytes))
-	installed, err := utils.GetInstalledVersions(baseDir)
-	if err != nil {
-		t.Fatalf("failed to get installed versions: %v", err)
+	if len(compatible) != 1 {
+		t.Fatalf("expected one compatible installed version, got %d", len(compatible))
 	}
-	var matchingVersions []string
-	for _, v := range installed {
-		if strconv.Itoa(v.Major) == majorStr {
-			matchingVersions = append(matchingVersions, filepath.Join(baseDir, strconv.Itoa(v.Major), strconv.Itoa(v.Minor), "bin", "postgres"))
-		}
-	}
-	if len(matchingVersions) > 0 {
-		detectedBinPath = matchingVersions[len(matchingVersions)-1]
-	}
-
-	if detectedBinPath != mockBinPath {
+	if detectedBinPath := postgresBinPath(baseDir, compatible[0]); detectedBinPath != mockBinPath {
 		t.Errorf("expected detectedBinPath to be %s, got %s", mockBinPath, detectedBinPath)
 	}
 
@@ -91,5 +83,27 @@ port = 5433
 	}
 	if detectedPort != "5433" {
 		t.Errorf("expected detectedPort to be 5433, got %s", detectedPort)
+	}
+}
+
+func TestPrepareAdoptDataDirSetsPostgresPermissions(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.Chmod(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(dataDir, "base")
+	if err := os.Mkdir(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareAdoptDataDir(dataDir, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatalf("prepareAdoptDataDir failed: %v", err)
+	}
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Fatalf("data directory permissions = %04o, want 0700", got)
 	}
 }
