@@ -35,6 +35,8 @@ var (
 		}
 		return utils.IsRootOrUser(meta.User)
 	}
+	modifyWriteSystemdService = writeSystemdService
+	modifyStartNewService     = startNewServiceChecked
 )
 
 var modifyCmd = &cobra.Command{
@@ -154,6 +156,7 @@ func runModify(instanceName string) {
 		}
 	}
 
+	dataDirMigrated := false
 	// Data Directory Migration if requested
 	if modifyDataDir != "" && newDataDir != oldDataDir && modifyMigrate {
 		if isActive && !restartNeeded {
@@ -165,6 +168,7 @@ func runModify(instanceName string) {
 			os.Exit(1)
 		}
 		fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_data_success", oldDataDir, newDataDir)))
+		dataDirMigrated = true
 
 		if meta.Pgrman != nil && meta.Pgrman.SrvLogPath != "" {
 			if rel, err := filepath.Rel(oldDataDir, meta.Pgrman.SrvLogPath); err == nil && !strings.HasPrefix(rel, "..") {
@@ -196,14 +200,39 @@ func runModify(instanceName string) {
 			_ = utils.RunCmd("loginctl", "enable-linger", newOSUser)
 		}
 		deleteSystemdService(instanceName, meta.User)
-		writeSystemdService(instanceName, newOSUser, newBinPath, newDataDir)
+		if err := modifyWriteSystemdService(instanceName, newOSUser, newBinPath, newDataDir); err != nil {
+			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+			os.Exit(1)
+		}
 	}
 
-	// Save to registry
-	config.SaveInstanceToRegistryWithDatabaseConnection(instanceName, newOSUser, newDataDir, newBinPath, newPort, newDBUser, newDatabaseName)
+	// A migrated cluster must successfully start from the new directory before
+	// the registry is committed. This also restarts an active instance even when
+	// the earlier generic restart prompt was declined: migration already required
+	// stopping it to move the files.
+	shouldStart := restartNeeded || (dataDirMigrated && isActive)
+	if dataDirMigrated || shouldStart {
+		if err := modifyStartNewService(instanceName, newOSUser); err != nil {
+			if dataDirMigrated {
+				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_start_failed", newDataDir, err)))
+			} else {
+				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_start_service_failed", err)))
+			}
+			os.Exit(1)
+		}
+		if dataDirMigrated && !isActive {
+			// Preserve the original stopped state after the startup test.
+			stopOldService(instanceName, newOSUser)
+		}
+	}
 
-	if restartNeeded {
-		startNewService(instanceName, newOSUser)
+	// Save only after the new service has passed its startup test.
+	if err := config.SaveInstanceToRegistryWithDatabaseConnection(instanceName, newOSUser, newDataDir, newBinPath, newPort, newDBUser, newDatabaseName); err != nil {
+		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+		os.Exit(1)
+	}
+
+	if shouldStart {
 		fmt.Println(i18n.T("restart_success", instanceName))
 	}
 
@@ -219,16 +248,27 @@ func stopOldService(name, osUser string) {
 }
 
 func startNewService(name, osUser string) {
+	_ = startNewServiceChecked(name, osUser)
+}
+
+func startNewServiceChecked(name, osUser string) error {
 	serviceName := fmt.Sprintf("postgresql-%s.service", name)
 	if osUser == "root" {
-		utils.RunCmd("systemctl", "daemon-reload")
-		utils.RunCmd("systemctl", "enable", serviceName)
-		utils.RunCmd("systemctl", "start", serviceName)
-	} else {
-		utils.RunAsUser(osUser, "systemctl --user daemon-reload")
-		utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName))
-		utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
+		if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
+			return err
+		}
+		if err := utils.RunCmd("systemctl", "enable", serviceName); err != nil {
+			return err
+		}
+		return utils.RunCmd("systemctl", "start", serviceName)
 	}
+	if err := utils.RunAsUser(osUser, "systemctl --user daemon-reload"); err != nil {
+		return err
+	}
+	if err := utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName)); err != nil {
+		return err
+	}
+	return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
 }
 
 func deleteSystemdService(name, osUser string) {
@@ -248,10 +288,10 @@ func deleteSystemdService(name, osUser string) {
 	}
 }
 
-func writeSystemdService(name, osUser, binPath, dataDir string) {
+func writeSystemdService(name, osUser, binPath, dataDir string) error {
 	u, err := user.Lookup(osUser)
 	if err != nil {
-		return
+		return err
 	}
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
@@ -288,11 +328,14 @@ Restart=on-failure
 WantedBy=%s
 `, name, binPath, dataDir, wantedBy)
 
-	os.WriteFile(svcPath, []byte(svcContent), 0644)
-	os.Chown(svcPath, uid, gid)
-	if osUser == "root" {
-		utils.RunCmd("systemctl", "daemon-reload")
-	} else {
-		utils.RunAsUser(osUser, "systemctl --user daemon-reload")
+	if err := os.WriteFile(svcPath, []byte(svcContent), 0644); err != nil {
+		return err
 	}
+	if err := os.Chown(svcPath, uid, gid); err != nil {
+		return err
+	}
+	if osUser == "root" {
+		return utils.RunCmd("systemctl", "daemon-reload")
+	}
+	return utils.RunAsUser(osUser, "systemctl --user daemon-reload")
 }

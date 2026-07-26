@@ -104,6 +104,9 @@ func TestModifyInstanceOSUser(t *testing.T) {
 	oldCheck := modifyCheckRoot
 	modifyCheckRoot = func() bool { return true }
 	defer func() { modifyCheckRoot = oldCheck }()
+	oldWriteService := modifyWriteSystemdService
+	modifyWriteSystemdService = func(string, string, string, string) error { return nil }
+	defer func() { modifyWriteSystemdService = oldWriteService }()
 
 	currUser, err := user.Current()
 	if err != nil {
@@ -157,6 +160,24 @@ func TestModifyInstanceDataDirMigration(t *testing.T) {
 	oldCheck := modifyCheckRoot
 	modifyCheckRoot = func() bool { return true }
 	defer func() { modifyCheckRoot = oldCheck }()
+	oldWriteService := modifyWriteSystemdService
+	oldStartService := modifyStartNewService
+	var writtenDataDir string
+	var registeredDataDirAtStart string
+	started := false
+	modifyWriteSystemdService = func(_, _, _, dataDir string) error {
+		writtenDataDir = dataDir
+		return nil
+	}
+	modifyStartNewService = func(_, _ string) error {
+		started = true
+		registeredDataDirAtStart = config.Global.Instances["mig-inst"].DataDir
+		return nil
+	}
+	defer func() {
+		modifyWriteSystemdService = oldWriteService
+		modifyStartNewService = oldStartService
+	}()
 
 	currUser, err := user.Current()
 	if err != nil {
@@ -210,5 +231,14 @@ func TestModifyInstanceDataDirMigration(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(newDataDir, "postgresql.conf")); err != nil {
 		t.Errorf("expected postgresql.conf to exist in newDataDir")
+	}
+	if !started {
+		t.Error("expected migrated instance to be startup-tested before saving")
+	}
+	if writtenDataDir != newDataDir {
+		t.Errorf("startup test used data directory %q, want %q", writtenDataDir, newDataDir)
+	}
+	if registeredDataDirAtStart != oldDataDir {
+		t.Errorf("configuration was committed before startup test: got %q, want old path %q", registeredDataDirAtStart, oldDataDir)
 	}
 }

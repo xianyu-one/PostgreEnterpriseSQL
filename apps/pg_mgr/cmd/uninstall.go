@@ -59,6 +59,14 @@ func runUninstall() {
 	}
 	osUser := meta.User
 	u, _ := user.Lookup(osUser)
+	deleteBackupDir := false
+	backupDir := ""
+	if meta.Pgrman != nil {
+		backupDir = filepath.Clean(meta.Pgrman.BackupDir)
+		if backupDir != "" && backupDir != "." && backupDir != "/" && !Config.Silent {
+			deleteBackupDir = utils.PromptConfirm(i18n.T("confirm_delete_backup_dir", backupDir))
+		}
+	}
 
 	pw := progress.NewWriter()
 	pw.SetAutoStop(false)
@@ -110,14 +118,23 @@ func runUninstall() {
 		return utils.RunAsUser(osUser, "systemctl --user daemon-reload")
 	})
 
-	executeStep(i18n.T("remove_data"), func() error {
-		_ = os.RemoveAll(meta.DataDir)
-		backupDir := filepath.Join(config.Global.BaseDir, fmt.Sprintf("backup_%s", Config.InstanceName))
-		_ = os.RemoveAll(backupDir)
-		return nil
+	// Commit registry removal before deleting data. If the shared configuration
+	// is not writable, abort instead of reporting success with a stale instance.
+	executeStep(i18n.T("remove_config"), func() error {
+		return config.RemoveInstanceFromRegistry(Config.InstanceName)
 	})
 
-	config.RemoveInstanceFromRegistry(Config.InstanceName)
+	executeStep(i18n.T("remove_data"), func() error {
+		if err := os.RemoveAll(meta.DataDir); err != nil {
+			return err
+		}
+		if deleteBackupDir && backupDir != "" && backupDir != "." && backupDir != "/" {
+			if err := os.RemoveAll(backupDir); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 
 	pw.Stop()
 	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))

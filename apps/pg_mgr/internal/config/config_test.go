@@ -178,4 +178,18 @@ func TestNewConfigFieldsAndBackup(t *testing.T) {
 	if inst.DatabaseName != "appdb" {
 		t.Errorf("database name mismatch: got %q", inst.DatabaseName)
 	}
+
+	// Removing an instance must remove the whole entry, including nested backup
+	// configuration, from both memory and the persisted registry.
+	if err := RemoveInstanceFromRegistry("testdb"); err != nil {
+		t.Fatalf("RemoveInstanceFromRegistry failed: %v", err)
+	}
+	if _, ok := Global.Instances["testdb"]; ok {
+		t.Fatal("removed instance still exists in memory")
+	}
+	viper.Reset()
+	InitConfig()
+	if _, ok := Global.Instances["testdb"]; ok {
+		t.Fatal("removed instance and its backup configuration still exist after reload")
+	}
 }
