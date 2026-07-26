@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -50,6 +52,11 @@ type GlobalConfig struct {
 
 var Global GlobalConfig
 var ConfigFilePath = "/etc/pg_mgr/conf.yaml"
+
+// PrivilegedWriteFunc is supplied by the CLI. It is called only when a normal
+// config write fails with a permission error, keeping prompting and privilege
+// escalation out of the config package.
+var PrivilegedWriteFunc func(path string, content []byte) error
 
 func InitConfig() {
 	viper.SetConfigFile(ConfigFilePath)
@@ -112,6 +119,24 @@ func InitConfig() {
 }
 
 func writeConfig() error {
+	configureViperForWrite()
+	err := viper.WriteConfigAs(ConfigFilePath)
+	return retryPrivilegedWrite(err)
+}
+
+func retryPrivilegedWrite(err error) error {
+	if err == nil || PrivilegedWriteFunc == nil || !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+
+	content, renderErr := renderConfig()
+	if renderErr != nil {
+		return renderErr
+	}
+	return PrivilegedWriteFunc(ConfigFilePath, content)
+}
+
+func configureViperForWrite() {
 	viper.Reset()
 	viper.SetConfigFile(ConfigFilePath)
 	viper.SetEnvPrefix("PG_MGR")
@@ -120,7 +145,24 @@ func writeConfig() error {
 	viper.Set("log_dir", Global.LogDir)
 	viper.Set("log_level", Global.LogLevel)
 	viper.Set("instances", Global.Instances)
-	return viper.WriteConfigAs(ConfigFilePath)
+}
+
+func renderConfig() ([]byte, error) {
+	tempFile, err := os.CreateTemp("", "pg_mgr-conf-*.yaml")
+	if err != nil {
+		return nil, err
+	}
+	tempPath := tempFile.Name()
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempPath)
+		return nil, err
+	}
+	defer os.Remove(tempPath)
+
+	if err := viper.WriteConfigAs(tempPath); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(tempPath)
 }
 
 func SaveGlobalConfig(baseDir, logDir, logLevel string) error {

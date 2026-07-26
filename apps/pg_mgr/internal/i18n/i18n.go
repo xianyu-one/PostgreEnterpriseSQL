@@ -256,6 +256,13 @@ var translationMap = map[string]map[string]string{
 		"prompt_migrate_archive":      "Do you want to migrate existing WAL archive files from '%s' to '%s'? (y/N)",
 		"prompt_migrate_backup":       "Do you want to migrate existing backup data from '%s' to '%s'? (y/N)",
 		"prompt_migrate_data":         "Do you want to migrate existing data directory from '%s' to '%s'? (y/N)",
+
+		"config_write_needs_privilege": "Writing configuration '%s' requires elevated privileges.",
+		"privilege_option_sudo":        "  1. Use sudo (enter the current user's password)",
+		"privilege_option_su":          "  2. Use su (enter the root password)",
+		"privilege_option_cancel":      "  0. Cancel",
+		"prompt_privilege_method":      "Select privilege elevation method",
+		"privilege_cancelled":          "Privilege elevation was cancelled.",
 	},
 	"zh-CN": {
 		"req_root":                    "此程序必须以 root 权限运行 (sudo)。",
@@ -506,6 +513,13 @@ var translationMap = map[string]map[string]string{
 		"prompt_migrate_archive":      "是否将现有的 WAL 归档文件从 '%s' 迁移至 '%s'？(y/N)",
 		"prompt_migrate_backup":       "是否将现有的备份数据从 '%s' 迁移至 '%s'？(y/N)",
 		"prompt_migrate_data":         "是否将现有的数据目录从 '%s' 迁移至 '%s'？(y/N)",
+
+		"config_write_needs_privilege": "写入配置文件 '%s' 需要提升权限。",
+		"privilege_option_sudo":        "  1. 使用 sudo（输入当前用户密码）",
+		"privilege_option_su":          "  2. 使用 su（输入 root 密码）",
+		"privilege_option_cancel":      "  0. 取消",
+		"prompt_privilege_method":      "请选择提权方式",
+		"privilege_cancelled":          "已取消提权操作。",
 	},
 }
 

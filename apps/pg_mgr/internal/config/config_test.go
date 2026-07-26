@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -191,5 +193,54 @@ func TestNewConfigFieldsAndBackup(t *testing.T) {
 	InitConfig()
 	if _, ok := Global.Instances["testdb"]; ok {
 		t.Fatal("removed instance and its backup configuration still exist after reload")
+	}
+}
+
+func TestRetryPrivilegedWriteOnlyForPermissionErrors(t *testing.T) {
+	originalHandler := PrivilegedWriteFunc
+	originalPath := ConfigFilePath
+	originalGlobal := Global
+	defer func() {
+		PrivilegedWriteFunc = originalHandler
+		ConfigFilePath = originalPath
+		Global = originalGlobal
+		viper.Reset()
+	}()
+
+	ConfigFilePath = "/etc/pg_mgr/conf.yaml"
+	Global = GlobalConfig{
+		BaseDir:   "/app/postgresql",
+		LogDir:    "/var/log/pg_mgr",
+		LogLevel:  "error",
+		Instances: map[string]InstanceMeta{},
+	}
+	configureViperForWrite()
+
+	called := false
+	PrivilegedWriteFunc = func(path string, content []byte) error {
+		called = true
+		if path != ConfigFilePath {
+			t.Fatalf("privileged target = %q, want %q", path, ConfigFilePath)
+		}
+		if !strings.Contains(string(content), "base_dir: /app/postgresql") {
+			t.Fatalf("rendered config missing base_dir: %s", content)
+		}
+		return nil
+	}
+
+	if err := retryPrivilegedWrite(&os.PathError{Op: "open", Path: ConfigFilePath, Err: fs.ErrPermission}); err != nil {
+		t.Fatalf("permission retry failed: %v", err)
+	}
+	if !called {
+		t.Fatal("permission error did not invoke privileged writer")
+	}
+
+	called = false
+	sentinel := errors.New("disk full")
+	if err := retryPrivilegedWrite(sentinel); !errors.Is(err, sentinel) {
+		t.Fatalf("non-permission error = %v, want %v", err, sentinel)
+	}
+	if called {
+		t.Fatal("non-permission error unexpectedly invoked privileged writer")
 	}
 }
