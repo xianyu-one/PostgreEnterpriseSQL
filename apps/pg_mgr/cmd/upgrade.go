@@ -474,11 +474,18 @@ WantedBy=%s
 	// Step 7: Start service
 	executeStep(i18n.T("step_start_service"), func() error {
 		if osUser == "root" {
-			utils.RunCmd("systemctl", "daemon-reload")
+			if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
+				return err
+			}
 			return utils.RunCmd("systemctl", "start", serviceName)
 		}
-		utils.RunAsUser(osUser, "systemctl --user daemon-reload")
-		return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
+		if err := utils.RunAsUser(osUser, "systemctl --user daemon-reload"); err != nil {
+			return err
+		}
+		if err := utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName)); err != nil {
+			return fmt.Errorf("%w\n%s", err, i18n.T("upgrade_service_diagnostic", osUser, osUser, serviceName, osUser, serviceName))
+		}
+		return nil
 	})
 
 	// Step 8: Update registry

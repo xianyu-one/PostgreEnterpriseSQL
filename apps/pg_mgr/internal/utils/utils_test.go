@@ -1,6 +1,9 @@
 package utils
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +11,49 @@ import (
 
 	"pg_mgr/internal/config"
 )
+
+func TestUntarGzExtractsHardLinks(t *testing.T) {
+	var archive bytes.Buffer
+	gzipWriter := gzip.NewWriter(&archive)
+	tarWriter := tar.NewWriter(gzipWriter)
+	zoneData := []byte("TZif test timezone data")
+
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name: "share/timezone/Asia/Manila",
+		Mode: 0644,
+		Size: int64(len(zoneData)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write(zoneData); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name:     "share/timezone/Asia/Taipei",
+		Linkname: "share/timezone/Asia/Manila",
+		Typeflag: tar.TypeLink,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	targetDir := t.TempDir()
+	if err := UntarGz(bytes.NewReader(archive.Bytes()), targetDir, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(targetDir, "share/timezone/Asia/Taipei"))
+	if err != nil {
+		t.Fatalf("hard-linked timezone file was not extracted: %v", err)
+	}
+	if !bytes.Equal(got, zoneData) {
+		t.Fatalf("hard-linked timezone data = %q, want %q", got, zoneData)
+	}
+}
 
 func TestParseLogindRemoveIPC(t *testing.T) {
 	tests := []struct {

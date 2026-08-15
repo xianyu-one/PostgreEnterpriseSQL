@@ -355,6 +355,23 @@ func UntarGz(gzipStream io.Reader, targetDir string, uid, gid int) error {
 			os.Chown(target, uid, gid)
 		case tar.TypeSymlink:
 			os.Symlink(header.Linkname, target)
+		case tar.TypeLink:
+			linkTarget := filepath.Join(targetDir, header.Linkname)
+			if !strings.HasPrefix(linkTarget, filepath.Clean(targetDir)+string(os.PathSeparator)) {
+				return fmt.Errorf("hard link target escapes extraction directory: %s", header.Linkname)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Link(linkTarget, target); err != nil {
+				return err
+			}
+			if err := os.Chown(target, uid, gid); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
