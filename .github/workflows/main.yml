@@ -35,14 +35,24 @@ on:
           - amd64
           - arm64
       pgbackrest_version:
-        description: 'pgBackRest 版本 (例如: 2.58.0)'
+        description: 'pgBackRest 版本 (latest 或例如: 2.58.0)'
         required: true
-        default: '2.58.0'
+        default: 'latest'
         type: string
       repmgr_version:
-        description: 'repmgr 版本 (例如: v5.5.0)'
+        description: 'repmgr 版本 (latest 或例如: v5.5.0)'
         required: true
-        default: 'v5.5.0'
+        default: 'latest'
+        type: string
+      postgis_version:
+        description: 'PostGIS 版本 (latest 或例如: 3.6.4)'
+        required: true
+        default: 'latest'
+        type: string
+      pgvector_version:
+        description: 'pgvector 版本 (latest 或例如: 0.8.6)'
+        required: true
+        default: 'latest'
         type: string
       use_china_mirror:
         description: '使用中国大陆镜像源 (容器系统、Golang、GitHub 代理等)'
@@ -72,6 +82,48 @@ jobs:
           OS_ID="${{ github.event.inputs.os_identifier }}"
           ARCH="${{ github.event.inputs.arch }}"
           PESQL_INPUT="${{ github.event.inputs.pesql_tag }}"
+          PGBACKREST_INPUT="${{ github.event.inputs.pgbackrest_version }}"
+          REPMGR_INPUT="${{ github.event.inputs.repmgr_version }}"
+          POSTGIS_INPUT="${{ github.event.inputs.postgis_version }}"
+          PGVECTOR_INPUT="${{ github.event.inputs.pgvector_version }}"
+
+          resolve_component_version() {
+            local input="$1"
+            local repository="$2"
+            local tag_pattern="$3"
+            local tag_prefix="$4"
+            local component="$5"
+
+            if [ -n "$input" ] && [ "$input" != "latest" ]; then
+              printf '%s\n' "$input"
+              return
+            fi
+
+            local version
+            version=$(git ls-remote --tags --refs "$repository" \
+              | awk '{ sub("refs/tags/", "", $2); print $2 }' \
+              | grep -E "$tag_pattern" \
+              | sed "s|^${tag_prefix}||" \
+              | sort -V \
+              | tail -n 1)
+
+            if [ -z "$version" ]; then
+              echo "Unable to resolve latest stable ${component} tag from ${repository}" >&2
+              exit 1
+            fi
+
+            printf '%s\n' "$version"
+          }
+
+          PGBACKREST_VERSION=$(resolve_component_version "$PGBACKREST_INPUT" "https://github.com/pgbackrest/pgbackrest.git" '^release/[0-9]+\.[0-9]+\.[0-9]+$' 'release/' 'pgBackRest')
+          REPMGR_VERSION=$(resolve_component_version "$REPMGR_INPUT" "https://github.com/EnterpriseDB/repmgr.git" '^v[0-9]+\.[0-9]+\.[0-9]+$' '' 'repmgr')
+          POSTGIS_VERSION=$(resolve_component_version "$POSTGIS_INPUT" "https://github.com/postgis/postgis.git" '^[0-9]+\.[0-9]+\.[0-9]+$' '' 'PostGIS')
+          PGVECTOR_VERSION=$(resolve_component_version "$PGVECTOR_INPUT" "https://github.com/pgvector/pgvector.git" '^v[0-9]+\.[0-9]+\.[0-9]+$' 'v' 'pgvector')
+
+          echo "pgbackrest_version=${PGBACKREST_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "repmgr_version=${REPMGR_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "postgis_version=${POSTGIS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "pgvector_version=${PGVECTOR_VERSION}" >> "$GITHUB_OUTPUT"
           
           # 从 '16.9' 生成 '16'
           PG_MAJOR=$(echo $PG_VERSION | cut -d. -f1)
@@ -159,6 +211,10 @@ jobs:
           echo "Platform: ${PLATFORM}"
           echo "Archive Name: ${ARCHIVE_NAME}"
           echo "pg_rman Branch: ${PGRMAN_BRANCH}"
+          echo "pgBackRest Version: ${PGBACKREST_VERSION}"
+          echo "repmgr Version: ${REPMGR_VERSION}"
+          echo "PostGIS Version: ${POSTGIS_VERSION}"
+          echo "pgvector Version: ${PGVECTOR_VERSION}"
           echo "PESQL Version: ${PESQL_VER}"
 
       - name: Manage Release Notes
@@ -171,14 +227,16 @@ jobs:
             const os = "${{ github.event.inputs.os_identifier }}";
             const arch = "${{ github.event.inputs.arch }}";
             const pgVersion = "${{ github.event.inputs.pg_version }}";
-            const pgbackrestVersion = "${{ github.event.inputs.pgbackrest_version }}";
-            const repmgrVersion = "${{ github.event.inputs.repmgr_version }}";
+            const pgbackrestVersion = "${{ steps.prep.outputs.pgbackrest_version }}";
+            const repmgrVersion = "${{ steps.prep.outputs.repmgr_version }}";
+            const postgisVersion = "${{ steps.prep.outputs.postgis_version }}";
+            const pgvectorVersion = "${{ steps.prep.outputs.pgvector_version }}";
             const pgrmanBranch = "${{ steps.prep.outputs.pgrman_branch }}";
             const pesqlVersion = "${{ steps.prep.outputs.pesql_version }}";
 
             const backupScripts = "`pgbackrest_backup.sh`, `pgrman_backup.sh`";
 
-            const newRow = `| **${os} (${arch})** | \`${pgVersion}\` | \`${pgbackrestVersion}\` | \`${repmgrVersion}\` | \`${pgrmanBranch}\` | \`${pesqlVersion}\` | ${backupScripts} |`;
+            const newRow = `| **${os} (${arch})** | \`${pgVersion}\` | \`${pgbackrestVersion}\` | \`${repmgrVersion}\` | \`${pgrmanBranch}\` | \`${postgisVersion}\` | \`${pgvectorVersion}\` | \`${pesqlVersion}\` | ${backupScripts} |`;
 
             let currentBody = "";
             let releaseId = null;
@@ -211,9 +269,18 @@ jobs:
             }
 
             const header = "## Component Versions";
+            const tableHeader = "| OS (Arch) | PostgreSQL | pgBackRest | repmgr | pg_rman | PostGIS | pgvector | PESQL version | Backup Scripts |";
+            const tableSeparator = "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |";
             if (foundIndex !== -1) {
               console.log("Found existing entry for this OS/Arch. Replacing it.");
               lines[foundIndex] = newRow;
+              const tableHeaderIndex = lines.findIndex(line => line.trim().startsWith("| OS (Arch) | PostgreSQL |"));
+              if (tableHeaderIndex !== -1) {
+                lines[tableHeaderIndex] = tableHeader;
+                if (lines[tableHeaderIndex + 1]?.trim().startsWith("| :---")) {
+                  lines[tableHeaderIndex + 1] = tableSeparator;
+                }
+              }
             } else {
               console.log("No entry for this OS/Arch. Appending to table or creating it.");
               const headerIndex = lines.findIndex(line => line.trim() === header);
@@ -238,8 +305,8 @@ jobs:
                 }
                 lines.push(header);
                 lines.push("");
-                lines.push("| OS (Arch) | PostgreSQL | pgBackRest | repmgr | pg_rman | PESQL version | Backup Scripts |");
-                lines.push("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
+                lines.push(tableHeader);
+                lines.push(tableSeparator);
                 lines.push(newRow);
               }
             }
@@ -275,10 +342,12 @@ jobs:
           build-args: |
             OS_IMAGE=${{ steps.prep.outputs.os_image }}
             PG_VERSION=${{ github.event.inputs.pg_version }}
-            PGBACKREST_VERSION=${{ github.event.inputs.pgbackrest_version }}
+            PGBACKREST_VERSION=${{ steps.prep.outputs.pgbackrest_version }}
             PGRMAN_BRANCH=${{ steps.prep.outputs.pgrman_branch }}
             ARCHIVE_NAME=${{ steps.prep.outputs.archive_name }}
-            REPMGR_VERSION=${{ github.event.inputs.repmgr_version }}
+            REPMGR_VERSION=${{ steps.prep.outputs.repmgr_version }}
+            POSTGIS_VERSION=${{ steps.prep.outputs.postgis_version }}
+            PGVECTOR_VERSION=${{ steps.prep.outputs.pgvector_version }}
             USE_CHINA_MIRROR=${{ github.event.inputs.use_china_mirror }}
             PESQL_VERSION=${{ steps.prep.outputs.pesql_version }}
           outputs: type=local,dest=./output

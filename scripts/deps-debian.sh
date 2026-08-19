@@ -64,6 +64,11 @@ PACKAGES=(
     wget
     libcurl4-openssl-dev
     libjson-c-dev
+    libgeos-dev
+    libproj-dev
+    libgdal-dev
+    libprotobuf-c-dev
+    protobuf-c-compiler
     bison
     flex
     libicu-dev

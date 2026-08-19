@@ -114,3 +114,25 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 repmgr is distributed under the terms of the GNU General Public License, version 3.
 You can obtain a copy of the GPLv3 license at [https://www.gnu.org/licenses/gpl-3.0.html](https://www.gnu.org/licenses/gpl-3.0.html).
 Copyright (c) EnterpriseDB (formerly 2ndQuadrant Ltd).
+
+---
+
+## 5. PostGIS
+
+* **Component**: PostGIS spatial database extension
+* **Source Code**: [https://postgis.net/](https://postgis.net/)
+* **License**: GNU General Public License v2 or later (GPL-2.0-or-later)
+
+PostGIS is distributed under the terms of the GNU General Public License,
+version 2 or any later version. See [https://www.gnu.org/licenses/old-licenses/gpl-2.0.html](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html).
+
+---
+
+## 6. pgvector
+
+* **Component**: pgvector vector similarity search extension
+* **Source Code**: [https://github.com/pgvector/pgvector](https://github.com/pgvector/pgvector)
+* **License**: PostgreSQL License
+
+pgvector is distributed under the PostgreSQL License. See its upstream
+[LICENSE](https://github.com/pgvector/pgvector/blob/master/LICENSE) file.

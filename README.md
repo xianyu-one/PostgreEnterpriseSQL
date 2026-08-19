@@ -11,6 +11,8 @@ PESQL bundles PostgreSQL with vital database management utilities, cluster tools
 1. **Pure Mainline Core**: Preserves 100% of the standard PostgreSQL database kernel and behavior.
 2. **Unified Enterprise Manager (`pg_mgr`)**: A pure Go tool providing simplified installation, instance creation, environment switching, upgrade paths, and systemd service orchestration.
 3. **Ecosystem Bundles**:
+   - **PostGIS**: Spatial data types, functions, and indexes.
+   - **pgvector**: Vector similarity search with exact and approximate indexes.
    - **`pgBackRest`**: Powerful, enterprise backup and restore solution.
    - **`repmgr`**: Easy replication and failover management.
    - **`pg_rman`**: Online physical backup and restore tool.
@@ -169,6 +171,29 @@ PESQL_VERSION=v1.0.0 ./scripts/build_apps.sh ./apps ./output
 ```
 This compiles the tools and places the output binaries under the `output/bin` or `output/sbin` directory depending on their root execution requirements.
 
+The release Docker build also compiles PostGIS and pgvector against the bundled
+PostgreSQL. Their versions can be selected with build arguments:
+
+```bash
+docker build \
+  --build-arg POSTGIS_VERSION=3.6.4 \
+  --build-arg PGVECTOR_VERSION=0.8.6 \
+  .
+```
+
+After installing a release package, enable the extensions in each database that
+needs them:
+
+```sql
+CREATE EXTENSION postgis;
+CREATE EXTENSION vector;
+```
+
+When the release workflow is started manually, pgBackRest, repmgr, PostGIS, and
+pgvector default to `latest`. The workflow resolves the newest stable upstream
+tag and records the resolved version in the release notes. Enter an explicit
+version in any component field to build that version instead.
+
 ---
 
 ## License
@@ -182,6 +207,7 @@ This project packages, compiles, or integrates third-party components under thei
 - **pgBackRest**: MIT License
 - **pg_rman**: BSD 3-Clause License
 - **repmgr**: GNU General Public License v3 (GPLv3)
+- **PostGIS**: GNU General Public License v2 or later
+- **pgvector**: PostgreSQL License
 
 For detailed licensing information on third-party components, see [LICENSE-3RD-PARTY.md](LICENSE-3RD-PARTY.md).
-

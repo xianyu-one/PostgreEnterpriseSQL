@@ -4,6 +4,8 @@ ARG PG_VERSION=16.9
 ARG PGBACKREST_VERSION=2.54.2
 ARG REPMGR_VERSION=v5.4.1
 ARG PGRMAN_BRANCH=REL_16_STABLE
+ARG POSTGIS_VERSION=3.6.4
+ARG PGVECTOR_VERSION=0.8.6
 ARG ARCHIVE_NAME=postgresql-16.9-x64-ubuntu22.04.tar.gz
 ARG USE_CHINA_MIRROR=false
 
@@ -55,6 +57,8 @@ ARG PG_VERSION
 ARG PGBACKREST_VERSION
 ARG REPMGR_VERSION
 ARG PGRMAN_BRANCH
+ARG POSTGIS_VERSION
+ARG PGVECTOR_VERSION
 ARG ARCHIVE_NAME
 ARG USE_CHINA_MIRROR=false
 
@@ -86,6 +90,34 @@ RUN cd /build && \
 
 ENV PKG_CONFIG_PATH="/build/postgresql-release/lib/pkgconfig"
 ENV PATH="/build/postgresql-release/bin:${PATH}"
+
+# Compile PostGIS from its official release archive. The dependency scripts
+# install GEOS, PROJ, GDAL, JSON-C, and protobuf-c development headers.
+RUN cd /build && \
+    POSTGIS_URL="https://download.osgeo.org/postgis/source/postgis-${POSTGIS_VERSION}.tar.gz" && \
+    wget -q -O - "$POSTGIS_URL" | \
+        tar zx -C /build && \
+    cd /build/postgis-${POSTGIS_VERSION} && \
+    LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/..'" \
+        ./configure \
+        --with-pgconfig=/build/postgresql-release/bin/pg_config && \
+    make -j "$(nproc)" && \
+    make install
+
+# Compile pgvector against the PostgreSQL installation being packaged.
+RUN cd /build && \
+    PGVECTOR_URL="https://github.com/pgvector/pgvector/archive/refs/tags/v${PGVECTOR_VERSION}.tar.gz" && \
+    wget -q -O - "$PGVECTOR_URL" | \
+        tar zx -C /build && \
+    cd /build/pgvector-${PGVECTOR_VERSION} && \
+    make -j "$(nproc)" PG_CONFIG=/build/postgresql-release/bin/pg_config && \
+    make install PG_CONFIG=/build/postgresql-release/bin/pg_config
+
+# Fail the image build if either extension is missing runtime or SQL metadata.
+RUN test -f /build/postgresql-release/lib/postgis-3.so && \
+    test -f /build/postgresql-release/share/extension/postgis.control && \
+    test -f /build/postgresql-release/lib/vector.so && \
+    test -f /build/postgresql-release/share/extension/vector.control
 
 # Compile pgBackRest - Meson 需要单独显式传递 c_link_args 保证 RPATH 写入
 RUN cd /build && \

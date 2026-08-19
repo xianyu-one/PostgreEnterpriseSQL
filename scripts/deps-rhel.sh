@@ -59,6 +59,10 @@ dnf install -y \
     make \
     libcurl-devel \
     json-c-devel \
+    geos-devel \
+    proj-devel \
+    gdal-devel \
+    protobuf-c-devel \
     openssl-devel \
     pam-devel \
     readline-devel \
