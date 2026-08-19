@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -23,30 +23,43 @@ var createInstanceCmd = &cobra.Command{
 	Use:     "create",
 	Aliases: []string{"create-instance"},
 	Short:   i18n.T("create_instance_desc"),
-	RunE:    func(cmd *cobra.Command, args []string) error { return runCreateInstance() },
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runCreateInstance(cmd.Flags().Changed("instance"))
+	},
 }
 
 func init() {
-	createInstanceCmd.Flags().StringVarP(&Config.InstanceName, "instance", "i", "default", "Instance name for multi-instance support")
-	createInstanceCmd.Flags().StringVarP(&Config.OSUser, "os-user", "u", "postgres", "OS user who runs the database instance")
-	createInstanceCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", "Major version path structure")
-	createInstanceCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", "Minor version path structure")
-	createInstanceCmd.Flags().StringVar(&Config.DataDir, "data", "", "Data directory path (defaults to base_dir/instances/instance_name)")
-	createInstanceCmd.Flags().IntVarP(&Config.Port, "port", "p", 51721, "Database listener port")
-	createInstanceCmd.Flags().StringVar(&Config.Password, "password", "SuperSecret123", "Initial password for the database superuser")
-	createInstanceCmd.Flags().StringVar(&Config.DBUser, "db-user", "postgres", "Database superuser created by initdb")
-	createInstanceCmd.Flags().BoolVar(&Config.SystemctlAlias, "systemctl-alias", false, "Add alias systemctl='systemctl --user' to the instance user's .pgrc")
-	createInstanceCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
+	createInstanceCmd.Flags().StringVarP(&Config.InstanceName, "instance", "i", "", i18n.T("flag_instance"))
+	createInstanceCmd.Flags().StringVarP(&Config.OSUser, "os-user", "u", "postgres", i18n.T("flag_os_user"))
+	createInstanceCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", i18n.T("flag_major"))
+	createInstanceCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", i18n.T("flag_minor"))
+	createInstanceCmd.Flags().StringVar(&Config.DataDir, "data", "", i18n.T("flag_data"))
+	createInstanceCmd.Flags().IntVarP(&Config.Port, "port", "p", 51721, i18n.T("flag_port"))
+	createInstanceCmd.Flags().StringVar(&Config.Password, "password", "", i18n.T("flag_password"))
+	_ = createInstanceCmd.Flags().MarkDeprecated("password", i18n.T("flag_password_deprecated"))
+	createInstanceCmd.Flags().StringVar(&Config.PasswordEnv, "password-env", "", i18n.T("flag_password_env"))
+	createInstanceCmd.Flags().StringVar(&Config.PasswordFile, "password-file", "", i18n.T("flag_password_file"))
+	createInstanceCmd.Flags().StringVar(&Config.DBUser, "db-user", "postgres", i18n.T("flag_db_user"))
+	createInstanceCmd.Flags().BoolVar(&Config.SystemctlAlias, "systemctl-alias", false, i18n.T("flag_systemctl_alias"))
+	createInstanceCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, i18n.T("flag_silent_deprecated"))
+	_ = createInstanceCmd.Flags().MarkDeprecated("silent", i18n.T("flag_silent_replacement"))
 
 	InstanceCmd.AddCommand(createInstanceCmd)
 	RootCmd.AddCommand(createInstanceCmd)
 }
 
-func runCreateInstance() error {
+func runCreateInstance(instanceExplicit bool) error {
+	password, passwordSource, err := interaction.ResolveSecret(Config.Password, Config.PasswordEnv, Config.PasswordFile)
+	if err != nil {
+		return err
+	}
+	Config.Password = password
 	if Config.OSUser == "" {
 		Config.OSUser = "postgres"
 	}
-	utils.EnsureUserPermission(Config.OSUser)
+	if err := utils.CheckUserPermission(Config.OSUser); err != nil {
+		return err
+	}
 	checkRemoveIPC()
 
 	baseDir := config.Global.BaseDir
@@ -80,17 +93,36 @@ func runCreateInstance() error {
 		Config.Port, _ = strconv.Atoi(portStr)
 		Config.DBUser = utils.PromptInput(i18n.T("prompt_db_user"), Config.DBUser)
 		Config.SystemctlAlias = utils.PromptConfirm(i18n.T("prompt_systemctl_alias"))
-		Config.Password, err = utils.PromptNewPassword(
-			i18n.T("prompt_pass"),
-			i18n.T("prompt_pass_confirm"),
-			i18n.T("err_password_mismatch"),
-		)
-		if err != nil {
-			return err
+		if Config.Password == "" {
+			Config.Password, err = utils.PromptNewPassword(
+				i18n.T("prompt_pass"),
+				i18n.T("prompt_pass_confirm"),
+				i18n.T("err_password_mismatch"),
+			)
+			if err != nil {
+				return err
+			}
 		}
 	} else {
+		if err := requireExplicitIdentity(true, UI.LegacySilent, &Config.InstanceName, Config.Password); err != nil {
+			return err
+		}
+		if UI.LegacySilent && !instanceExplicit {
+			fmt.Fprintln(os.Stderr, i18n.T("warn_legacy_default_instance"))
+		}
 		if Config.DataDir == "" {
 			Config.DataDir = filepath.Join(baseDir, "instances", Config.InstanceName)
+		}
+	}
+	if !Config.Silent {
+		if passwordSource == "" {
+			passwordSource = i18n.T("secret_source_terminal")
+		}
+		if err := reviewInstallConfig(i18n.T("review_create"), passwordSource, false); err != nil {
+			return err
+		}
+		if err := utils.CheckUserPermission(Config.OSUser); err != nil {
+			return err
 		}
 	}
 
@@ -113,26 +145,13 @@ func runCreateInstance() error {
 		return fmt.Errorf("%s", i18n.T("err_version_not_installed", fmt.Sprintf("%s.%s", Config.MajorVersion, Config.MinorVersion)))
 	}
 
-	pw := progress.NewWriter()
-	pw.SetAutoStop(false)
-	pw.SetTrackerLength(25)
-	pw.SetMessageWidth(40)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.DoneString = "✓"
-	pw.Style().Options.ErrorString = "✗"
-	go pw.Render()
-
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	operation := interaction.NewOperation(os.Stderr, mode)
 	executeStep := func(msg string, action func() error) error {
-		tracker := progress.Tracker{Message: msg, Total: 1, Units: progress.UnitsDefault}
-		pw.AppendTracker(&tracker)
-		if err := action(); err != nil {
-			tracker.MarkAsErrored()
-			pw.Stop()
-			fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			return err
-		}
-		tracker.MarkAsDone()
-		return nil
+		return operation.Run(msg, action)
 	}
 
 	dataDir := Config.DataDir
@@ -339,9 +358,85 @@ WantedBy=%s
 	}
 
 	committed = true
-	pw.Stop()
-	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": Config.InstanceName, "data_dir": dataDir, "port": Config.Port, "status": "created", "operation": operation.Result()})
+	}
+	if !UI.Quiet {
+		fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	}
 	return nil
+}
+
+func reviewInstallConfig(title, passwordSource string, includeTar bool) error {
+	renderer := interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputTable, false)
+	prompt := interaction.NewPrompt(os.Stdin, os.Stderr)
+	for {
+		fields := make([]interaction.ReviewField, 0, 9)
+		if includeTar {
+			fields = append(fields, interaction.ReviewField{Label: i18n.T("prompt_tar"), Value: Config.TarPath})
+		}
+		fields = append(fields,
+			interaction.ReviewField{Label: i18n.T("tbl_inst"), Value: Config.InstanceName},
+			interaction.ReviewField{Label: i18n.T("tbl_ver_version"), Value: Config.MajorVersion + "." + Config.MinorVersion},
+			interaction.ReviewField{Label: i18n.T("tbl_datadir"), Value: Config.DataDir},
+			interaction.ReviewField{Label: i18n.T("tbl_port"), Value: strconv.Itoa(Config.Port)},
+			interaction.ReviewField{Label: i18n.T("tbl_user"), Value: Config.OSUser},
+			interaction.ReviewField{Label: i18n.T("tbl_db_user"), Value: Config.DBUser},
+			interaction.ReviewField{Label: i18n.T("prompt_pass"), Secret: true, Source: passwordSource},
+		)
+		renderer.Review(title, fields)
+		choice, err := prompt.Menu(i18n.T("prompt_select_option"), []string{i18n.T("review_execute"), i18n.T("review_modify"), i18n.T("menu_cancel")}, 0)
+		if err != nil {
+			return err
+		}
+		switch choice {
+		case 0:
+			return nil
+		case 2:
+			return interaction.ErrCancelled
+		}
+		editItems := []string{i18n.T("tbl_inst"), i18n.T("tbl_ver_version"), i18n.T("tbl_datadir"), i18n.T("tbl_port"), i18n.T("tbl_user"), i18n.T("tbl_db_user"), i18n.T("prompt_pass")}
+		if includeTar {
+			editItems = append([]string{i18n.T("prompt_tar")}, editItems...)
+		}
+		field, err := prompt.Menu(i18n.T("prompt_modify_field"), editItems, 0)
+		if err != nil {
+			return err
+		}
+		if includeTar {
+			if field == 0 {
+				Config.TarPath = utils.PromptPath(i18n.T("prompt_tar"), Config.TarPath)
+				continue
+			}
+			field--
+		}
+		switch field {
+		case 0:
+			Config.InstanceName = utils.PromptInput(i18n.T("prompt_inst"), Config.InstanceName)
+		case 1:
+			Config.MajorVersion = utils.PromptInput(i18n.T("prompt_major"), Config.MajorVersion)
+			Config.MinorVersion = utils.PromptInput(i18n.T("prompt_minor"), Config.MinorVersion)
+		case 2:
+			Config.DataDir = utils.PromptPath(i18n.T("prompt_inst_data_dir"), Config.DataDir)
+		case 3:
+			value := utils.PromptInput(i18n.T("prompt_port"), strconv.Itoa(Config.Port))
+			port, convErr := strconv.Atoi(value)
+			if convErr != nil || port < 1 || port > 65535 {
+				return interaction.NewError(interaction.CodeInvalidInput, i18n.T("prompt_port"), interaction.ExitUsage)
+			}
+			Config.Port = port
+		case 4:
+			Config.OSUser = utils.PromptInput(i18n.T("prompt_os_user"), Config.OSUser)
+		case 5:
+			Config.DBUser = utils.PromptInput(i18n.T("prompt_db_user"), Config.DBUser)
+		case 6:
+			Config.Password, err = utils.PromptNewPassword(i18n.T("prompt_pass"), i18n.T("prompt_pass_confirm"), i18n.T("err_password_mismatch"))
+			if err != nil {
+				return err
+			}
+			passwordSource = i18n.T("secret_source_terminal")
+		}
+	}
 }
 
 func buildInitDBCommand(versionPathFull, pgCtl, dataDir, dbUser string) string {

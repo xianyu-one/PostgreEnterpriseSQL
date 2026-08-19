@@ -10,13 +10,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/process"
 	"pg_mgr/internal/utils"
 )
@@ -32,7 +32,7 @@ var (
 var adoptCmd = &cobra.Command{
 	Use:   "adopt",
 	Short: i18n.T("adopt_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runAdopt() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runAdopt() },
 }
 
 func init() {
@@ -46,12 +46,19 @@ func init() {
 	RootCmd.AddCommand(adoptCmd)
 }
 
-func runAdopt() {
-	utils.EnsureRoot()
+func runAdopt() (runErr error) {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
+	if UI.NonInteractive && adoptDataDir == "" {
+		return interaction.MissingFlags("--data-dir")
+	}
+	if UI.NonInteractive && adoptName == "" {
+		return interaction.MissingFlags("--name")
+	}
 
 	if adoptDataDir != "" {
-		adoptUnstarted(adoptDataDir, adoptOSUser, adoptBinPath, adoptPort, adoptName)
-		return
+		return adoptUnstarted(adoptDataDir, adoptOSUser, adoptBinPath, adoptPort, adoptName)
 	}
 
 	managedDirs := make(map[string]bool)
@@ -70,9 +77,9 @@ func runAdopt() {
 	if len(candidates) == 0 {
 		fmt.Println(text.FgHiYellow.Sprint(i18n.T("adopt_none")))
 		if utils.PromptConfirm(i18n.T("prompt_adopt_unstarted")) {
-			adoptUnstarted("", "", "", "", "")
+			return adoptUnstarted("", "", "", "", "")
 		}
-		return
+		return nil
 	}
 
 	fmt.Println(text.FgHiCyan.Sprint(i18n.T("adopt_found")))
@@ -86,8 +93,7 @@ func runAdopt() {
 
 	idxStr := utils.PromptInput(i18n.T("prompt_adopt_idx"), "0")
 	if strings.ToLower(idxStr) == "m" || strings.ToLower(idxStr) == "manual" {
-		adoptUnstarted("", "", "", "", "")
-		return
+		return adoptUnstarted("", "", "", "", "")
 	}
 	idx, err := strconv.Atoi(idxStr)
 	if err != nil || idx < 1 || idx > len(candidates) {
@@ -125,31 +131,19 @@ func runAdopt() {
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
 
-	pw := progress.NewWriter()
-	pw.SetAutoStop(false)
-	pw.SetTrackerLength(25)
-	pw.SetMessageWidth(40)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.DoneString = "✓"
-	pw.Style().Options.ErrorString = "✗"
-	go pw.Render()
-
-	executeStep := func(msg string, action func() error) {
-		tracker := progress.Tracker{Message: msg, Total: 1, Units: progress.UnitsDefault}
-		pw.AppendTracker(&tracker)
-		if err := action(); err != nil {
-			tracker.MarkAsErrored()
-			pw.Stop()
-			fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			os.Exit(1)
-		}
-		tracker.MarkAsDone()
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	operation := interaction.NewOperation(os.Stderr, mode)
+	executeStep := func(msg string, action func() error) error {
+		return operation.Run(msg, action)
 	}
 
 	// Detect old service files before killing the process
 	oldServiceFiles := detectOldServiceFiles(target)
 
-	executeStep(i18n.T("step_kill_old"), func() error {
+	if err := executeStep(i18n.T("step_kill_old"), func() error {
 		pidInt, _ := strconv.Atoi(target.PID)
 		syscall.Kill(pidInt, syscall.SIGINT)
 		for i := 0; i < 15; i++ {
@@ -159,9 +153,11 @@ func runAdopt() {
 			time.Sleep(500 * time.Millisecond)
 		}
 		return fmt.Errorf("process did not stop gracefully")
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_user"), func() error {
+	if err := executeStep(i18n.T("step_user"), func() error {
 		if osUser != "root" {
 			if err := utils.RunCmd("loginctl", "enable-linger", osUser); err != nil {
 				return err
@@ -174,9 +170,11 @@ func runAdopt() {
 			}
 		}
 		return prepareAdoptDataDir(target.DataDir, uid, gid)
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_pgconf"), func() error {
+	if err := executeStep(i18n.T("step_pgconf"), func() error {
 		confPath := filepath.Join(target.DataDir, "postgresql.conf")
 		utils.ReplaceInFile(confPath, `(?m)^#?logging_collector\s*=.*`, "logging_collector = on")
 		utils.ReplaceInFile(confPath, `(?m)^#?password_encryption\s*=.*`, "password_encryption = scram-sha-256")
@@ -188,10 +186,12 @@ func runAdopt() {
 			utils.AppendToFile(hbaPath, "\nhost    all             all             0.0.0.0/0          scram-sha-256\n")
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
 	serviceName := fmt.Sprintf("postgresql-%s.service", instName)
-	executeStep(i18n.T("step_systemd"), func() error {
+	if err := executeStep(i18n.T("step_systemd"), func() error {
 		var svcPath string
 		var wantedBy string
 		if osUser == "root" {
@@ -228,9 +228,11 @@ WantedBy=%s
 			return err
 		}
 		return os.Chown(svcPath, uid, gid)
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_start"), func() error {
+	if err := executeStep(i18n.T("step_start"), func() error {
 		if osUser == "root" {
 			if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
 				return err
@@ -247,17 +249,21 @@ WantedBy=%s
 			return err
 		}
 		return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Add to Global Registry
 	if err := config.SaveInstanceToRegistry(instName, osUser, target.DataDir, target.BinPath, target.Port); err != nil {
-		pw.Stop()
-		fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-		return
+		return err
 	}
 
-	pw.Stop()
-	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": instName, "status": "adopted", "operation": operation.Result()})
+	}
+	if !UI.Quiet {
+		fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	}
 
 	if len(oldServiceFiles) > 0 {
 		var pathsStr strings.Builder
@@ -266,6 +272,7 @@ WantedBy=%s
 		}
 		fmt.Print(i18n.T("warn_old_services", pathsStr.String()))
 	}
+	return nil
 }
 
 func detectOldServiceFiles(target process.PgProcess) []string {
@@ -388,8 +395,11 @@ func detectOldServiceFiles(target process.PgProcess) []string {
 	return foundFiles
 }
 
-func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
+func adoptUnstarted(dataDir, osUser, binPath, port, name string) (runErr error) {
 	if dataDir == "" {
+		if UI.NonInteractive {
+			return interaction.MissingFlags("--data-dir")
+		}
 		dataDir = utils.PromptPath(i18n.T("prompt_data_dir"), "")
 	}
 	if dataDir == "" {
@@ -419,7 +429,11 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 			defaultUser = "postgres"
 		}
 	}
-	osUser = utils.PromptInput(i18n.T("prompt_os_user"), defaultUser)
+	if UI.NonInteractive {
+		osUser = defaultUser
+	} else {
+		osUser = utils.PromptInput(i18n.T("prompt_os_user"), defaultUser)
+	}
 	u, err := user.Lookup(osUser)
 	if err != nil {
 		if utils.PromptConfirm(i18n.T("prompt_create_user", osUser)) {
@@ -448,10 +462,12 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 			fmt.Println(text.FgHiRed.Sprint(err))
 			return
 		}
-		selected, err := promptInstalledVersion(i18n.T("prompt_select_version"), compatible, len(compatible)-1)
-		if err != nil {
-			fmt.Println(text.FgHiRed.Sprint(err))
-			return
+		selected := compatible[len(compatible)-1]
+		if !UI.NonInteractive {
+			selected, err = promptInstalledVersion(i18n.T("prompt_select_version"), compatible, len(compatible)-1)
+			if err != nil {
+				return err
+			}
 		}
 		binPath = postgresBinPath(config.Global.BaseDir, selected)
 	}
@@ -470,10 +486,17 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 	}
 
 	if port == "" {
-		port = utils.PromptInput(i18n.T("prompt_port"), detectedPort)
+		if UI.NonInteractive {
+			port = detectedPort
+		} else {
+			port = utils.PromptInput(i18n.T("prompt_port"), detectedPort)
+		}
 	}
 
 	if name == "" {
+		if UI.NonInteractive {
+			return interaction.MissingFlags("--name")
+		}
 		name = utils.PromptInput(i18n.T("prompt_inst"), "legacy_"+port)
 	}
 
@@ -482,28 +505,16 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 		return
 	}
 
-	pw := progress.NewWriter()
-	pw.SetAutoStop(false)
-	pw.SetTrackerLength(25)
-	pw.SetMessageWidth(40)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.DoneString = "✓"
-	pw.Style().Options.ErrorString = "✗"
-	go pw.Render()
-
-	executeStep := func(msg string, action func() error) {
-		tracker := progress.Tracker{Message: msg, Total: 1, Units: progress.UnitsDefault}
-		pw.AppendTracker(&tracker)
-		if err := action(); err != nil {
-			tracker.MarkAsErrored()
-			pw.Stop()
-			fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			os.Exit(1)
-		}
-		tracker.MarkAsDone()
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	operation := interaction.NewOperation(os.Stderr, mode)
+	executeStep := func(msg string, action func() error) error {
+		return operation.Run(msg, action)
 	}
 
-	executeStep(i18n.T("step_user"), func() error {
+	if err := executeStep(i18n.T("step_user"), func() error {
 		if osUser != "root" {
 			if err := utils.RunCmd("loginctl", "enable-linger", osUser); err != nil {
 				return err
@@ -515,9 +526,11 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 			}
 		}
 		return prepareAdoptDataDir(dataDirClean, uid, gid)
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_pgconf"), func() error {
+	if err := executeStep(i18n.T("step_pgconf"), func() error {
 		utils.ReplaceInFile(confPath, `(?m)^#?logging_collector\s*=.*`, "logging_collector = on")
 		utils.ReplaceInFile(confPath, `(?m)^#?password_encryption\s*=.*`, "password_encryption = scram-sha-256")
 		utils.ReplaceInFile(confPath, `(?m)^#?listen_addresses\s*=.*`, "listen_addresses = '0.0.0.0'")
@@ -529,10 +542,12 @@ func adoptUnstarted(dataDir, osUser, binPath, port, name string) {
 			utils.AppendToFile(hbaPath, "\nhost    all             all             0.0.0.0/0          scram-sha-256\n")
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
 	serviceName := fmt.Sprintf("postgresql-%s.service", name)
-	executeStep(i18n.T("step_systemd"), func() error {
+	if err := executeStep(i18n.T("step_systemd"), func() error {
 		var svcPath string
 		var wantedBy string
 		if osUser == "root" {
@@ -569,9 +584,11 @@ WantedBy=%s
 			return err
 		}
 		return os.Chown(svcPath, uid, gid)
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_start"), func() error {
+	if err := executeStep(i18n.T("step_start"), func() error {
 		if osUser == "root" {
 			if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
 				return err
@@ -588,17 +605,22 @@ WantedBy=%s
 			return err
 		}
 		return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Add to Global Registry
 	if err := config.SaveInstanceToRegistry(name, osUser, dataDirClean, binPath, port); err != nil {
-		pw.Stop()
-		fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-		return
+		return err
 	}
 
-	pw.Stop()
-	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": name, "status": "adopted", "operation": operation.Result()})
+	}
+	if !UI.Quiet {
+		fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	}
+	return nil
 }
 
 func postgresBinPath(baseDir string, version utils.PGVersion) string {

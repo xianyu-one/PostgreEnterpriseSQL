@@ -15,15 +15,17 @@ import (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: i18n.T("init_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runInit() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runInit() },
 }
 
 func init() {
 	RootCmd.AddCommand(initCmd)
 }
 
-func runInit() {
-	utils.EnsureRoot()
+func runInit() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
 
 	baseDir := utils.PromptPath(i18n.T("prompt_global_base"), config.Global.BaseDir)
 	logDir := utils.PromptPath(i18n.T("prompt_global_log_dir"), config.Global.LogDir)
@@ -37,9 +39,9 @@ func runInit() {
 	}
 
 	if err := config.SaveGlobalConfig(baseDir, logDir, logLevel); err != nil {
-		fmt.Println(i18n.T("err_failed", err))
-		return
+		return err
 	}
 
 	fmt.Println(text.FgHiGreen.Sprint(i18n.T("init_success")))
+	return nil
 }

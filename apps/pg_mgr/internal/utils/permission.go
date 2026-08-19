@@ -9,10 +9,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/jedib0t/go-pretty/v6/text"
-
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 )
 
 var (
@@ -58,36 +57,50 @@ func IsRootOrUser(targetUser string) bool {
 }
 
 // EnsureRoot checks that the current user is root.
-func EnsureRoot() {
-	if !IsRoot() {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-		os.Exit(1)
+func EnsureRoot() error {
+	return CheckRoot()
+}
+
+func CheckRoot() error {
+	if IsRoot() {
+		return nil
 	}
+	return interaction.NewError(interaction.CodePermissionDenied, i18n.T("req_root"), interaction.ExitPermission).
+		WithDetail("required_identity", "root").
+		WithRemediation(i18n.T("retry_with") + "\n  " + interaction.RetryCommand("sudo", os.Args))
+}
+
+func CheckUserPermission(targetUser string) error {
+	if IsRootOrUser(targetUser) {
+		return nil
+	}
+	return interaction.NewError(
+		interaction.CodePermissionDenied,
+		i18n.T("req_root_or_user", targetUser),
+		interaction.ExitPermission,
+	).WithDetail("allowed_identities", []string{"root", targetUser}).
+		WithRemediation(i18n.T("retry_with") + "\n  " + interaction.RetryCommand("sudo", os.Args))
+}
+
+func CheckInstancePermission(instanceName string) error {
+	if IsRoot() {
+		return nil
+	}
+	targetUser := "postgres"
+	if meta, ok := config.Global.Instances[instanceName]; ok {
+		targetUser = meta.User
+	}
+	return CheckUserPermission(targetUser)
 }
 
 // EnsureInstancePermission checks if current user is root OR the instance daemon user.
-func EnsureInstancePermission(instanceName string) {
-	if IsRoot() {
-		return
-	}
-	meta, ok := config.Global.Instances[instanceName]
-	if !ok {
-		// If instance is not in registry, root is required or error out
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", "postgres")))
-		os.Exit(1)
-	}
-	if !IsRootOrUser(meta.User) {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", meta.User)))
-		os.Exit(1)
-	}
+func EnsureInstancePermission(instanceName string) error {
+	return CheckInstancePermission(instanceName)
 }
 
 // EnsureUserPermission checks if current user is root OR targetUser.
-func EnsureUserPermission(targetUser string) {
-	if !IsRootOrUser(targetUser) {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", targetUser)))
-		os.Exit(1)
-	}
+func EnsureUserPermission(targetUser string) error {
+	return CheckUserPermission(targetUser)
 }
 
 // EnsurePkgPermissions sets minimal accessible permissions on a software version package directory (0755 for dirs/executables, 0644 for files) without altering file ownership.

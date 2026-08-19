@@ -10,13 +10,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -31,11 +31,11 @@ var UpgConfig UpgradeConfig
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: i18n.T("upgrade_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runUpgrade() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runUpgrade() },
 }
 
 func init() {
-	upgradeCmd.Flags().StringVarP(&UpgConfig.InstanceName, "instance", "i", "default", "Instance name to upgrade")
+	upgradeCmd.Flags().StringVarP(&UpgConfig.InstanceName, "instance", "i", "", "Instance name to upgrade")
 	upgradeCmd.RegisterFlagCompletionFunc("instance", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		var list []string
 		for name := range config.Global.Instances {
@@ -43,8 +43,9 @@ func init() {
 		}
 		return list, cobra.ShellCompDirectiveNoFileComp
 	})
-	upgradeCmd.Flags().StringVarP(&UpgConfig.TargetVersion, "target-version", "t", "", "Target version to upgrade to (e.g., 16.10)")
-	upgradeCmd.Flags().BoolVarP(&UpgConfig.Silent, "silent", "s", false, "Run in silent mode without prompts")
+	upgradeCmd.Flags().StringVarP(&UpgConfig.TargetVersion, "target-version", "t", "", i18n.T("flag_target_version"))
+	upgradeCmd.Flags().BoolVarP(&UpgConfig.Silent, "silent", "s", false, i18n.T("flag_silent_deprecated"))
+	_ = upgradeCmd.Flags().MarkDeprecated("silent", i18n.T("flag_silent_replacement"))
 
 	InstanceCmd.AddCommand(upgradeCmd)
 	RootCmd.AddCommand(upgradeCmd)
@@ -87,22 +88,33 @@ func getVersionFromBinPath(baseDir, binPath, osUser string) (utils.PGVersion, er
 	return utils.PGVersion{}, fmt.Errorf("could not determine version from bin path %s", binPath)
 }
 
-func runUpgrade() {
+func runUpgrade() error {
 	if !UpgConfig.Silent {
 		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
 		if err != nil {
-			fmt.Println(text.FgHiRed.Sprint(err))
-			return
+			return err
 		}
 		UpgConfig.InstanceName = selected
 	}
+	if UpgConfig.Silent && UpgConfig.InstanceName == "" {
+		if UI.LegacySilent {
+			UpgConfig.InstanceName = "default"
+			fmt.Fprintln(os.Stderr, i18n.T("warn_legacy_default_instance"))
+		} else {
+			return interaction.MissingFlags("--instance")
+		}
+	}
+	if UpgConfig.Silent && !UI.Yes {
+		return interaction.MissingFlags("--yes")
+	}
 
-	utils.EnsureInstancePermission(UpgConfig.InstanceName)
+	if err := utils.CheckInstancePermission(UpgConfig.InstanceName); err != nil {
+		return err
+	}
 
 	meta, ok := config.Global.Instances[UpgConfig.InstanceName]
 	if !ok {
-		fmt.Println(i18n.T("err_not_reg", UpgConfig.InstanceName))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_not_reg", UpgConfig.InstanceName), interaction.ExitTarget)
 	}
 
 	baseDir := config.Global.BaseDir
@@ -110,14 +122,12 @@ func runUpgrade() {
 
 	currentVer, err := getVersionFromBinPath(baseDir, meta.BinPath, osUser)
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	installed, err := utils.GetInstalledVersions(baseDir)
 	if err != nil {
-		fmt.Printf("Error scanning base directory: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	var candidates []utils.PGVersion
@@ -128,16 +138,14 @@ func runUpgrade() {
 	}
 
 	if len(candidates) == 0 {
-		fmt.Println(text.FgHiYellow.Sprint(i18n.T("upgrade_non_found")))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("upgrade_non_found"), interaction.ExitTarget)
 	}
 
 	var targetVer utils.PGVersion
 	if UpgConfig.TargetVersion != "" {
 		targetVer, err = utils.ParseVersion(UpgConfig.TargetVersion)
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			return interaction.NewError(interaction.CodeInvalidInput, err.Error(), interaction.ExitUsage).WithCause(err)
 		}
 		// Validate candidate
 		found := false
@@ -153,15 +161,12 @@ func runUpgrade() {
 			if err2 == nil {
 				cmp := utils.CompareVersions(targetVerParsed, currentVer)
 				if cmp == 0 {
-					fmt.Println(i18n.T("err_same_version", UpgConfig.InstanceName, currentVer.Raw))
-					os.Exit(1)
+					return interaction.NewError(interaction.CodeResourceConflict, i18n.T("err_same_version", UpgConfig.InstanceName, currentVer.Raw), interaction.ExitTarget)
 				} else if cmp < 0 {
-					fmt.Println(i18n.T("err_lower_version", UpgConfig.InstanceName, currentVer.Raw, UpgConfig.TargetVersion))
-					os.Exit(1)
+					return interaction.NewError(interaction.CodeInvalidInput, i18n.T("err_lower_version", UpgConfig.InstanceName, currentVer.Raw, UpgConfig.TargetVersion), interaction.ExitUsage)
 				}
 			}
-			fmt.Println(i18n.T("err_version_not_installed", UpgConfig.TargetVersion))
-			os.Exit(1)
+			return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_version_not_installed", UpgConfig.TargetVersion), interaction.ExitTarget)
 		}
 	} else {
 		// Recommend target version:
@@ -218,7 +223,7 @@ func runUpgrade() {
 				} else {
 					fmt.Println(text.FgHiRed.Sprint(i18n.T("err_invalid_id")))
 				}
-				return
+				return interaction.ErrCancelled
 			}
 			targetVer = candidates[idx-1]
 		}
@@ -233,42 +238,31 @@ func runUpgrade() {
 
 	u, err := user.Lookup(osUser)
 	if err != nil {
-		fmt.Println(i18n.T("err_user_not_found", osUser))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_user_not_found", osUser), interaction.ExitTarget).WithCause(err)
 	}
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
 
-	pw := progress.NewWriter()
-	pw.SetAutoStop(false)
-	pw.SetTrackerLength(25)
-	pw.SetMessageWidth(40)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.DoneString = "✓"
-	pw.Style().Options.ErrorString = "✗"
-	go pw.Render()
-
-	executeStep := func(msg string, action func() error) {
-		tracker := progress.Tracker{Message: msg, Total: 1, Units: progress.UnitsDefault}
-		pw.AppendTracker(&tracker)
-		if err := action(); err != nil {
-			tracker.MarkAsErrored()
-			pw.Stop()
-			fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			os.Exit(1)
-		}
-		tracker.MarkAsDone()
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	operation := interaction.NewOperation(os.Stderr, mode)
+	executeStep := func(msg string, action func() error) error {
+		return operation.Run(msg, action)
 	}
 
 	serviceName := fmt.Sprintf("postgresql-%s.service", UpgConfig.InstanceName)
 
 	// Step 1: Stop Service
-	executeStep(i18n.T("step_stop_service"), func() error {
+	if err := executeStep(i18n.T("step_stop_service"), func() error {
 		if osUser == "root" {
 			return utils.RunCmd("systemctl", "stop", serviceName)
 		}
 		return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user stop %s", serviceName))
-	})
+	}); err != nil {
+		return err
+	}
 
 	var oldDataDirBackup string
 	var newDataDir string
@@ -282,25 +276,29 @@ func runUpgrade() {
 		_ = os.RemoveAll(oldDataDirBackup)
 
 		// Step 2: Backup Data
-		executeStep(i18n.T("step_backup_data"), func() error {
+		if err := executeStep(i18n.T("step_backup_data"), func() error {
 			return os.Rename(oldDataDir, oldDataDirBackup)
-		})
+		}); err != nil {
+			return err
+		}
 
-		rollback := func(upgErr error) {
-			pw.Stop()
-			fmt.Printf("\n%s: %v\n", text.FgHiRed.Sprint("Upgrade failed. Rolling back..."), upgErr)
+		rollback := func(upgErr error) error {
+			if UI.Output != string(interaction.OutputJSON) {
+				fmt.Fprintf(os.Stderr, "\n%s: %v\n", text.FgHiRed.Sprint(i18n.T("upgrade_rollback")), upgErr)
+			}
 			_ = os.RemoveAll(newDataDir)
 			_ = os.Rename(oldDataDirBackup, oldDataDir)
+			operation.RolledBack(i18n.T("step_backup_data"))
 			if osUser == "root" {
 				_ = utils.RunCmd("systemctl", "start", serviceName)
 			} else {
 				_ = utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
 			}
-			os.Exit(1)
+			return upgErr
 		}
 
 		// Step 3: Initialize new database cluster
-		executeStep(i18n.T("step_init_new_db"), func() error {
+		if err := executeStep(i18n.T("step_init_new_db"), func() error {
 			if err := os.MkdirAll(newDataDir, 0755); err != nil {
 				return err
 			}
@@ -320,41 +318,33 @@ func runUpgrade() {
 			hbaPath := filepath.Join(newDataDir, "pg_hba.conf")
 			_ = utils.AppendToFile(hbaPath, "\nhost    all             all             0.0.0.0/0          scram-sha-256\n")
 			return nil
-		})
+		}); err != nil {
+			return rollback(err)
+		}
 
 		// Stop progress writer to allow user interaction in terminal
-		pw.Stop()
-
 		// Run configuration migration wizard if not in silent mode
 		if !UpgConfig.Silent {
 			runConfigMigrationWizard(oldDataDirBackup, newDataDir)
 		}
 
-		// Restart progress writer for the remaining steps
-		pw = progress.NewWriter()
-		pw.SetAutoStop(false)
-		pw.SetTrackerLength(25)
-		pw.SetMessageWidth(40)
-		pw.Style().Colors = progress.StyleColorsExample
-		pw.Style().Options.DoneString = "✓"
-		pw.Style().Options.ErrorString = "✗"
-		go pw.Render()
-
 		// Step 4: Run pg_upgrade
-		executeStep(i18n.T("step_run_pg_upgrade"), func() error {
+		if err := executeStep(i18n.T("step_run_pg_upgrade"), func() error {
 			pgUpgradeBin := filepath.Join(newBinDir, "pg_upgrade")
 			// Run pg_upgrade in the home directory to ensure write access to log files
 			cmd := fmt.Sprintf("cd ~ && export LD_LIBRARY_PATH=%s/../lib:%s/../lib && %s -d %s -D %s -b %s -B %s",
 				newBinDir, oldBinDir, pgUpgradeBin, oldDataDirBackup, newDataDir, oldBinDir, newBinDir)
 			if err := utils.RunAsUser(osUser, cmd); err != nil {
-				rollback(err)
+				return err
 			}
 			return nil
-		})
+		}); err != nil {
+			return rollback(err)
+		}
 
 		// Re-initialize pg_rman backup catalog for upgraded database if configured
 		if meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman" && meta.Pgrman.BackupDir != "" {
-			executeStep(i18n.T("step_reinit_pgrman"), func() error {
+			if err := executeStep(i18n.T("step_reinit_pgrman"), func() error {
 				oldBackupDir := meta.Pgrman.BackupDir
 				if oldBackupDir != "" {
 					if _, err := os.Stat(oldBackupDir); err == nil {
@@ -406,12 +396,14 @@ func runUpgrade() {
 					_ = os.Chown(iniPath, uid, gid)
 				}
 				return nil
-			})
+			}); err != nil {
+				return rollback(err)
+			}
 		}
 	}
 
 	// Step 5: Update systemd service file
-	executeStep(i18n.T("step_update_systemd"), func() error {
+	if err := executeStep(i18n.T("step_update_systemd"), func() error {
 		var svcPath string
 		var wantedBy string
 		if osUser == "root" {
@@ -446,10 +438,12 @@ WantedBy=%s
 			return err
 		}
 		return os.Chown(svcPath, uid, gid)
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Step 6: Update user environment (.pgrc)
-	executeStep(i18n.T("step_update_env"), func() error {
+	if err := executeStep(i18n.T("step_update_env"), func() error {
 		pgrcPath := filepath.Join(u.HomeDir, ".pgrc")
 		backupDir := filepath.Join(baseDir, fmt.Sprintf("backup_%s", UpgConfig.InstanceName))
 		if meta.Pgrman != nil && meta.Pgrman.BackupDir != "" {
@@ -469,10 +463,12 @@ WantedBy=%s
 			return err
 		}
 		return os.Chown(pgrcPath, uid, gid)
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Step 7: Start service
-	executeStep(i18n.T("step_start_service"), func() error {
+	if err := executeStep(i18n.T("step_start_service"), func() error {
 		if osUser == "root" {
 			if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
 				return err
@@ -486,16 +482,25 @@ WantedBy=%s
 			return fmt.Errorf("%w\n%s", err, i18n.T("upgrade_service_diagnostic", osUser, osUser, serviceName, osUser, serviceName))
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Step 8: Update registry
-	executeStep(i18n.T("step_update_registry"), func() error {
+	if err := executeStep(i18n.T("step_update_registry"), func() error {
 		return config.SaveInstanceToRegistry(UpgConfig.InstanceName, osUser, meta.DataDir, newBinPath, meta.Port)
-	})
+	}); err != nil {
+		return err
+	}
 
-	pw.Stop()
-	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("upgrade_success", UpgConfig.InstanceName, targetVer.Raw)))
-	fmt.Println(text.FgHiYellow.Sprint(i18n.T("upgrade_collation_notice")))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": UpgConfig.InstanceName, "target_version": targetVer.Raw, "status": "upgraded", "operation": operation.Result()})
+	}
+	if !UI.Quiet {
+		fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("upgrade_success", UpgConfig.InstanceName, targetVer.Raw)))
+		fmt.Println(text.FgHiYellow.Sprint(i18n.T("upgrade_collation_notice")))
+	}
+	return nil
 }
 
 type ConfigParam struct {

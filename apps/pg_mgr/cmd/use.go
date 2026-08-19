@@ -11,6 +11,7 @@ import (
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -19,17 +20,18 @@ var useCmd = &cobra.Command{
 	Aliases: []string{"switch"},
 	Short:   i18n.T("use_desc"),
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 1 {
-			runUse(args[0])
-			return
+			return runUse(args[0])
+		}
+		if UI.NonInteractive {
+			return interaction.MissingFlags("instance_name")
 		}
 		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return
+			return err
 		}
-		runUse(selected)
+		return runUse(selected)
 	},
 }
 
@@ -48,11 +50,10 @@ func init() {
 	RootCmd.AddCommand(useCmd)
 }
 
-func runUse(instanceName string) {
+func runUse(instanceName string) error {
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
-		fmt.Fprintf(os.Stderr, i18n.T("err_not_reg")+"\n", instanceName)
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_not_reg", instanceName), interaction.ExitTarget).WithDetail("instance", instanceName)
 	}
 
 	versionPathFull := filepath.Dir(filepath.Dir(meta.BinPath))
@@ -74,12 +75,12 @@ func runUse(instanceName string) {
 		}
 
 		if err := utils.UpdatePgrc(pgrcPath, envs); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to update %s: %v\n", pgrcPath, err)
+			fmt.Fprintln(os.Stderr, i18n.T("warn_profile_update", pgrcPath, err))
 		} else {
 			uid, _ := strconv.Atoi(u.Uid)
 			gid, _ := strconv.Atoi(u.Gid)
 			_ = os.Chown(pgrcPath, uid, gid)
-			fmt.Fprintf(os.Stderr, "Updated %s environment configuration.\n", pgrcPath)
+			fmt.Fprintln(os.Stderr, i18n.T("profile_updated", pgrcPath))
 		}
 	}
 
@@ -90,5 +91,6 @@ func runUse(instanceName string) {
 	fmt.Printf("export PGDATA='%s'\n", meta.DataDir)
 	fmt.Printf("export LD_LIBRARY_PATH=':%s/lib/'\n", versionPathFull)
 	fmt.Printf("export PGPORT='%s'\n", meta.Port)
-	fmt.Fprintln(os.Stderr, "Run 'eval $(pg_mgr use <instance_name>)' to switch the current shell environment.")
+	fmt.Fprintln(os.Stderr, i18n.T("use_guidance"))
+	return nil
 }

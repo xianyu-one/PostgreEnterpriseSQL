@@ -7,39 +7,70 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
+
+var deploymentPasswordSource string
 
 var installCmd = &cobra.Command{
 	Use:     "deploy",
 	Aliases: []string{"install"},
 	Short:   i18n.T("install_desc"),
-	Run:     func(cmd *cobra.Command, args []string) { runInstall(cmd) },
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := prepareDeployment(cmd); err != nil {
+			return err
+		}
+		return runInstall(cmd)
+	},
 }
 
 func init() {
-	installCmd.Flags().StringVarP(&Config.TarPath, "tar", "t", "postgresql-16.9-x64-Ubuntu24.04.tar.gz", "Path to the tar.gz package")
-	installCmd.Flags().StringVarP(&Config.InstanceName, "instance", "i", "default", "Instance name for multi-instance support")
-	installCmd.Flags().StringVarP(&Config.OSUser, "os-user", "u", "postgres", "OS user who runs the database instance")
-	installCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", "Major version path structure")
-	installCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", "Minor version path structure")
-	installCmd.Flags().StringVar(&Config.DataDir, "data", "", "Data directory path (defaults to base_dir/instances/instance_name)")
-	installCmd.Flags().IntVarP(&Config.Port, "port", "p", 51721, "Database listener port")
-	installCmd.Flags().StringVar(&Config.Password, "password", "SuperSecret123", "Initial password for postgres user")
-	installCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
+	installCmd.Flags().StringVarP(&Config.TarPath, "tar", "t", "postgresql-16.9-x64-Ubuntu24.04.tar.gz", i18n.T("flag_tar"))
+	installCmd.Flags().StringVarP(&Config.InstanceName, "instance", "i", "", i18n.T("flag_instance"))
+	installCmd.Flags().StringVarP(&Config.OSUser, "os-user", "u", "postgres", i18n.T("flag_os_user"))
+	installCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", i18n.T("flag_major"))
+	installCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", i18n.T("flag_minor"))
+	installCmd.Flags().StringVar(&Config.DataDir, "data", "", i18n.T("flag_data"))
+	installCmd.Flags().IntVarP(&Config.Port, "port", "p", 51721, i18n.T("flag_port"))
+	installCmd.Flags().StringVar(&Config.Password, "password", "", i18n.T("flag_password"))
+	_ = installCmd.Flags().MarkDeprecated("password", i18n.T("flag_password_deprecated"))
+	installCmd.Flags().StringVar(&Config.PasswordEnv, "password-env", "", i18n.T("flag_password_env"))
+	installCmd.Flags().StringVar(&Config.PasswordFile, "password-file", "", i18n.T("flag_password_file"))
+	installCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, i18n.T("flag_silent_deprecated"))
+	_ = installCmd.Flags().MarkDeprecated("silent", i18n.T("flag_silent_replacement"))
 
 	RootCmd.AddCommand(installCmd)
 	InstanceCmd.AddCommand(installCmd)
 }
 
-func runInstall(cmd *cobra.Command) {
-	utils.EnsureRoot()
+func prepareDeployment(cmd *cobra.Command) error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
+	password, source, err := interaction.ResolveSecret(Config.Password, Config.PasswordEnv, Config.PasswordFile)
+	if err != nil {
+		return err
+	}
+	Config.Password = password
+	deploymentPasswordSource = source
+	if Config.Silent {
+		if err := requireExplicitIdentity(true, UI.LegacySilent, &Config.InstanceName, Config.Password); err != nil {
+			return err
+		}
+		if UI.LegacySilent && !cmd.Flags().Changed("instance") {
+			fmt.Fprintln(os.Stderr, i18n.T("warn_legacy_default_instance"))
+		}
+	}
+	return nil
+}
+
+func runInstall(cmd *cobra.Command) error {
 	checkRemoveIPC()
 
 	baseDir := config.Global.BaseDir
@@ -57,13 +88,12 @@ func runInstall(cmd *cobra.Command) {
 		if detected {
 			Config.MajorVersion = detectedMajor
 			Config.MinorVersion = detectedMinor
-			fmt.Printf("Auto-detected version from tarball: %s.%s\n", detectedMajor, detectedMinor)
+			fmt.Fprintln(os.Stderr, i18n.T("version_auto_detected", detectedMajor, detectedMinor))
 		} else {
 			if len(installed) > 0 {
 				selected, selectErr := promptInstalledVersion(i18n.T("prompt_select_version"), installed, len(installed)-1)
 				if selectErr != nil {
-					fmt.Println(text.FgHiRed.Sprint(selectErr))
-					return
+					return selectErr
 				}
 				Config.MajorVersion = strconv.Itoa(selected.Major)
 				Config.MinorVersion = strconv.Itoa(selected.Minor)
@@ -82,14 +112,15 @@ func runInstall(cmd *cobra.Command) {
 
 		portStr := utils.PromptInput(i18n.T("prompt_port"), strconv.Itoa(Config.Port))
 		Config.Port, _ = strconv.Atoi(portStr)
-		Config.Password, err = utils.PromptNewPassword(
-			i18n.T("prompt_pass"),
-			i18n.T("prompt_pass_confirm"),
-			i18n.T("err_password_mismatch"),
-		)
-		if err != nil {
-			fmt.Println(text.FgHiRed.Sprint(err))
-			return
+		if Config.Password == "" {
+			Config.Password, err = utils.PromptNewPassword(
+				i18n.T("prompt_pass"),
+				i18n.T("prompt_pass_confirm"),
+				i18n.T("err_password_mismatch"),
+			)
+			if err != nil {
+				return err
+			}
 		}
 	} else {
 		detectedMajor, detectedMinor, detected := utils.DetectVersionFromTar(Config.TarPath)
@@ -105,6 +136,14 @@ func runInstall(cmd *cobra.Command) {
 			Config.DataDir = filepath.Join(baseDir, "instances", Config.InstanceName)
 		}
 	}
+	if !Config.Silent {
+		if deploymentPasswordSource == "" {
+			deploymentPasswordSource = i18n.T("secret_source_terminal")
+		}
+		if err := reviewInstallConfig(i18n.T("review_deploy"), deploymentPasswordSource, true); err != nil {
+			return err
+		}
+	}
 
 	osUser := Config.OSUser
 	if osUser == "" {
@@ -115,25 +154,13 @@ func runInstall(cmd *cobra.Command) {
 	dataDir := Config.DataDir
 	backupDir := filepath.Join(baseDir, fmt.Sprintf("backup_%s", Config.InstanceName))
 
-	pw := progress.NewWriter()
-	pw.SetAutoStop(false)
-	pw.SetTrackerLength(25)
-	pw.SetMessageWidth(40)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.DoneString = "✓"
-	pw.Style().Options.ErrorString = "✗"
-	go pw.Render()
-
-	executeStep := func(msg string, action func() error) {
-		tracker := progress.Tracker{Message: msg, Total: 1, Units: progress.UnitsDefault}
-		pw.AppendTracker(&tracker)
-		if err := action(); err != nil {
-			tracker.MarkAsErrored()
-			pw.Stop()
-			fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			os.Exit(1)
-		}
-		tracker.MarkAsDone()
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	operation := interaction.NewOperation(os.Stderr, mode)
+	executeStep := func(msg string, action func() error) error {
+		return operation.Run(msg, action)
 	}
 
 	pgBin := filepath.Join(versionPathFull, "bin", "postgres")
@@ -142,13 +169,13 @@ func runInstall(cmd *cobra.Command) {
 			overwritePrompt := i18n.T("confirm_overwrite_version", Config.MajorVersion, Config.MinorVersion, versionPathFull)
 			if !utils.PromptConfirm(overwritePrompt) {
 				fmt.Println(i18n.T("abort"))
-				return
+				return nil
 			}
 		}
 	}
 
 	var pgUserHome string
-	executeStep(i18n.T("step_user"), func() error {
+	if err := executeStep(i18n.T("step_user"), func() error {
 		u, err := user.Lookup(osUser)
 		if err != nil {
 			pgUserHome = filepath.Join(baseDir, "home", osUser)
@@ -181,9 +208,11 @@ func runInstall(cmd *cobra.Command) {
 			return utils.RunCmd("loginctl", "enable-linger", osUser)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_extract"), func() error {
+	if err := executeStep(i18n.T("step_extract"), func() error {
 		file, err := os.Open(Config.TarPath)
 		if err != nil {
 			return err
@@ -196,9 +225,11 @@ func runInstall(cmd *cobra.Command) {
 			return err
 		}
 		return utils.EnsurePkgPermissions(versionPathFull)
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_env"), func() error {
+	if err := executeStep(i18n.T("step_env"), func() error {
 		bashProfile := filepath.Join(pgUserHome, ".bash_profile")
 		pgrcPath := filepath.Join(pgUserHome, ".pgrc")
 		u, _ := user.Lookup(osUser)
@@ -226,15 +257,19 @@ source %s
 		}
 		os.Chown(pgrcPath, uid, gid)
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_initdb"), func() error {
+	if err := executeStep(i18n.T("step_initdb"), func() error {
 		pgCtl := filepath.Join(versionPathFull, "bin", "pg_ctl")
 		cmd := buildInitDBCommand(versionPathFull, pgCtl, dataDir, "postgres")
 		return utils.RunAsUser(osUser, cmd)
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_pgconf"), func() error {
+	if err := executeStep(i18n.T("step_pgconf"), func() error {
 		confPath := filepath.Join(dataDir, "postgresql.conf")
 		utils.ReplaceInFile(confPath, `(?m)^#?logging_collector\s*=.*`, "logging_collector = on")
 		utils.ReplaceInFile(confPath, `(?m)^#?password_encryption\s*=.*`, "password_encryption = scram-sha-256")
@@ -243,10 +278,12 @@ source %s
 
 		hbaPath := filepath.Join(dataDir, "pg_hba.conf")
 		return utils.AppendToFile(hbaPath, "\nhost    all             all             0.0.0.0/0          scram-sha-256\n")
-	})
+	}); err != nil {
+		return err
+	}
 
 	serviceName := fmt.Sprintf("postgresql-%s.service", Config.InstanceName)
-	executeStep(i18n.T("step_systemd"), func() error {
+	if err := executeStep(i18n.T("step_systemd"), func() error {
 		u, _ := user.Lookup(osUser)
 		uid, _ := strconv.Atoi(u.Uid)
 		gid, _ := strconv.Atoi(u.Gid)
@@ -289,9 +326,11 @@ WantedBy=%s
 			return err
 		}
 		return os.Chown(svcPath, uid, gid)
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_start"), func() error {
+	if err := executeStep(i18n.T("step_start"), func() error {
 		if osUser == "root" {
 			utils.RunCmd("systemctl", "daemon-reload")
 			utils.RunCmd("systemctl", "enable", serviceName)
@@ -301,18 +340,29 @@ WantedBy=%s
 			utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName))
 			return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
 		}
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_password"), func() error {
+	if err := executeStep(i18n.T("step_password"), func() error {
 		psql := filepath.Join(versionPathFull, "bin", "psql")
 		cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/lib && %s -p %d -d postgres -U postgres -c \"ALTER USER postgres WITH PASSWORD '%s';\"", versionPathFull, psql, Config.Port, Config.Password)
 		return utils.RunAsUser(osUser, cmd)
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Add to Global Registry
 	pgBin = filepath.Join(versionPathFull, "bin", "postgres")
-	config.SaveInstanceToRegistryWithDatabaseConnection(Config.InstanceName, osUser, dataDir, pgBin, strconv.Itoa(Config.Port), "postgres", "postgres")
+	if err := config.SaveInstanceToRegistryWithDatabaseConnection(Config.InstanceName, osUser, dataDir, pgBin, strconv.Itoa(Config.Port), "postgres", "postgres"); err != nil {
+		return err
+	}
 
-	pw.Stop()
-	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": Config.InstanceName, "data_dir": dataDir, "port": Config.Port, "status": "deployed", "operation": operation.Result()})
+	}
+	if !UI.Quiet {
+		fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	}
+	return nil
 }

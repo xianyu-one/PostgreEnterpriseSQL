@@ -1,7 +1,11 @@
 package main
 
-import "pg_mgr/cmd"
+import (
+	"os"
+
+	"pg_mgr/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	os.Exit(cmd.Execute())
 }

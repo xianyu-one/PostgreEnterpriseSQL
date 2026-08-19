@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -20,32 +20,36 @@ var installPkgCmd = &cobra.Command{
 	Use:     "install",
 	Aliases: []string{"install-pkg"},
 	Short:   i18n.T("install_pkg_desc"),
-	Run:     func(cmd *cobra.Command, args []string) { runInstallPkg(cmd) },
+	RunE:    func(cmd *cobra.Command, args []string) error { return runInstallPkg(cmd) },
 }
 
 var installPkgLegacyCmd = &cobra.Command{
 	Use:   "install-pkg",
 	Short: i18n.T("install_pkg_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runInstallPkg(cmd) },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runInstallPkg(cmd) },
 }
 
 func init() {
-	installPkgCmd.Flags().StringVarP(&Config.TarPath, "tar", "t", "postgresql-16.9-x64-Ubuntu24.04.tar.gz", "Path to the tar.gz package")
-	installPkgCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", "Major version path structure")
-	installPkgCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", "Minor version path structure")
-	installPkgCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
+	installPkgCmd.Flags().StringVarP(&Config.TarPath, "tar", "t", "postgresql-16.9-x64-Ubuntu24.04.tar.gz", i18n.T("flag_tar"))
+	installPkgCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", i18n.T("flag_major"))
+	installPkgCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", i18n.T("flag_minor"))
+	installPkgCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, i18n.T("flag_silent_deprecated"))
+	_ = installPkgCmd.Flags().MarkDeprecated("silent", i18n.T("flag_silent_replacement"))
 
-	installPkgLegacyCmd.Flags().StringVarP(&Config.TarPath, "tar", "t", "postgresql-16.9-x64-Ubuntu24.04.tar.gz", "Path to the tar.gz package")
-	installPkgLegacyCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", "Major version path structure")
-	installPkgLegacyCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", "Minor version path structure")
-	installPkgLegacyCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, "Run in silent mode without prompts")
+	installPkgLegacyCmd.Flags().StringVarP(&Config.TarPath, "tar", "t", "postgresql-16.9-x64-Ubuntu24.04.tar.gz", i18n.T("flag_tar"))
+	installPkgLegacyCmd.Flags().StringVar(&Config.MajorVersion, "major", "16", i18n.T("flag_major"))
+	installPkgLegacyCmd.Flags().StringVar(&Config.MinorVersion, "minor", "9", i18n.T("flag_minor"))
+	installPkgLegacyCmd.Flags().BoolVarP(&Config.Silent, "silent", "s", false, i18n.T("flag_silent_deprecated"))
+	_ = installPkgLegacyCmd.Flags().MarkDeprecated("silent", i18n.T("flag_silent_replacement"))
 
 	PkgCmd.AddCommand(installPkgCmd)
 	RootCmd.AddCommand(installPkgLegacyCmd)
 }
 
-func runInstallPkg(cmd *cobra.Command) {
-	utils.EnsureRoot()
+func runInstallPkg(cmd *cobra.Command) error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
 	checkRemoveIPC()
 
 	if !Config.Silent {
@@ -53,19 +57,19 @@ func runInstallPkg(cmd *cobra.Command) {
 
 		detectedMajor, detectedMinor, detected, vErr := utils.DetectAndVerifyTarVersion(Config.TarPath)
 		if vErr != nil && !detected {
-			fmt.Println(text.FgHiYellow.Sprintf("Warning: Version inspection failed: %v", vErr))
+			fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("warn_version_inspection", vErr)))
 		} else if vErr != nil && detected {
-			fmt.Println(text.FgHiYellow.Sprintf("Warning: Package binary execution check failed: %v (Using filename version: %s.%s)", vErr, detectedMajor, detectedMinor))
+			fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("warn_package_execution", vErr, detectedMajor, detectedMinor)))
 		}
 
 		if detected {
 			fnMajor, fnMinor, fnOk := utils.DetectVersionFromTar(Config.TarPath)
 			if fnOk && (fnMajor != detectedMajor || fnMinor != detectedMinor) {
-				fmt.Println(text.FgHiYellow.Sprintf("Warning: Version mismatch between tarball filename (%s.%s) and binary output (%s.%s). Using binary version.", fnMajor, fnMinor, detectedMajor, detectedMinor))
+				fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("warn_version_mismatch", fnMajor, fnMinor, detectedMajor, detectedMinor)))
 			}
 			Config.MajorVersion = detectedMajor
 			Config.MinorVersion = detectedMinor
-			fmt.Printf("Auto-detected and verified version from tarball: %s.%s\n", detectedMajor, detectedMinor)
+			fmt.Fprintln(os.Stderr, i18n.T("version_verified", detectedMajor, detectedMinor))
 		} else {
 			baseDir := config.Global.BaseDir
 			installed, err := utils.GetInstalledVersions(baseDir)
@@ -73,7 +77,7 @@ func runInstallPkg(cmd *cobra.Command) {
 				selected, selectErr := promptInstalledVersion(i18n.T("prompt_select_version"), installed, len(installed)-1)
 				if selectErr != nil {
 					fmt.Println(text.FgHiRed.Sprint(selectErr))
-					return
+					return selectErr
 				}
 				Config.MajorVersion = strconv.Itoa(selected.Major)
 				Config.MinorVersion = strconv.Itoa(selected.Minor)
@@ -94,25 +98,13 @@ func runInstallPkg(cmd *cobra.Command) {
 		}
 	}
 
-	pw := progress.NewWriter()
-	pw.SetAutoStop(false)
-	pw.SetTrackerLength(25)
-	pw.SetMessageWidth(40)
-	pw.Style().Colors = progress.StyleColorsExample
-	pw.Style().Options.DoneString = "✓"
-	pw.Style().Options.ErrorString = "✗"
-	go pw.Render()
-
-	executeStep := func(msg string, action func() error) {
-		tracker := progress.Tracker{Message: msg, Total: 1, Units: progress.UnitsDefault}
-		pw.AppendTracker(&tracker)
-		if err := action(); err != nil {
-			tracker.MarkAsErrored()
-			pw.Stop()
-			fmt.Printf("\n%s\n", text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			os.Exit(1)
-		}
-		tracker.MarkAsDone()
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	operation := interaction.NewOperation(os.Stderr, mode)
+	executeStep := func(msg string, action func() error) error {
+		return operation.Run(msg, action)
 	}
 
 	baseDir := config.Global.BaseDir
@@ -124,13 +116,13 @@ func runInstallPkg(cmd *cobra.Command) {
 			overwritePrompt := i18n.T("confirm_overwrite_version", Config.MajorVersion, Config.MinorVersion, versionPathFull)
 			if !utils.PromptConfirm(overwritePrompt) {
 				fmt.Println(i18n.T("abort"))
-				return
+				return nil
 			}
 		}
 	}
 
 	var pgUserHome string
-	executeStep(i18n.T("step_user"), func() error {
+	if err := executeStep(i18n.T("step_user"), func() error {
 		u, err := user.Lookup("postgres")
 		if err != nil {
 			pgUserHome = filepath.Join(baseDir, "home")
@@ -151,9 +143,11 @@ func runInstallPkg(cmd *cobra.Command) {
 		}
 
 		return utils.RunCmd("loginctl", "enable-linger", "postgres")
-	})
+	}); err != nil {
+		return err
+	}
 
-	executeStep(i18n.T("step_extract"), func() error {
+	if err := executeStep(i18n.T("step_extract"), func() error {
 		file, err := os.Open(Config.TarPath)
 		if err != nil {
 			return err
@@ -166,24 +160,34 @@ func runInstallPkg(cmd *cobra.Command) {
 			return err
 		}
 		return utils.EnsurePkgPermissions(versionPathFull)
-	})
+	}); err != nil {
+		return err
+	}
 
-	pw.Stop()
-	fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"version": Config.MajorVersion + "." + Config.MinorVersion, "status": "installed", "operation": operation.Result()})
+	}
+	if !UI.Quiet {
+		fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")))
+	}
+	return nil
 }
 
 func checkRemoveIPC() {
+	if UI.Output == string(interaction.OutputJSON) {
+		return
+	}
 	setting, err := utils.DetectLogindRemoveIPC()
 	if err != nil {
-		fmt.Println(text.FgHiYellow.Sprint(i18n.T("removeipc_check_failed", err)))
-		fmt.Println(i18n.T("removeipc_manual_check"))
+		fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("removeipc_check_failed", err)))
+		fmt.Fprintln(os.Stderr, i18n.T("removeipc_manual_check"))
 		return
 	}
 	if setting == "no" {
-		fmt.Println(text.FgHiGreen.Sprint(i18n.T("removeipc_check_ok")))
+		fmt.Fprintln(os.Stderr, text.FgHiGreen.Sprint(i18n.T("removeipc_check_ok")))
 		return
 	}
 
-	fmt.Println(text.FgHiYellow.Sprint(i18n.T("removeipc_warning", setting)))
-	fmt.Println(i18n.T("removeipc_recommendation"))
+	fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("removeipc_warning", setting)))
+	fmt.Fprintln(os.Stderr, i18n.T("removeipc_recommendation"))
 }

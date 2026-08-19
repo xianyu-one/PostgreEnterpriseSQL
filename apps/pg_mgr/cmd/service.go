@@ -10,6 +10,7 @@ import (
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -17,49 +18,58 @@ var startCmd = &cobra.Command{
 	Use:   "start [instance_name]",
 	Short: i18n.T("start_desc"),
 	Args:  cobra.MaximumNArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("start", args) },
+	RunE:  serviceHandler("start"),
 }
 
 var stopCmd = &cobra.Command{
 	Use:   "stop [instance_name]",
 	Short: i18n.T("stop_desc"),
 	Args:  cobra.MaximumNArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("stop", args) },
+	RunE:  serviceHandler("stop"),
 }
 
 var restartCmd = &cobra.Command{
 	Use:   "restart [instance_name]",
 	Short: i18n.T("restart_desc"),
 	Args:  cobra.MaximumNArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("restart", args) },
+	RunE:  serviceHandler("restart"),
 }
 
 var reloadCmd = &cobra.Command{
 	Use:   "reload [instance_name]",
 	Short: i18n.T("reload_desc"),
 	Args:  cobra.MaximumNArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("reload", args) },
+	RunE:  serviceHandler("reload"),
 }
 
 var statusCmd = &cobra.Command{
 	Use:   "status [instance_name]",
 	Short: i18n.T("status_desc"),
 	Args:  cobra.MaximumNArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("status", args) },
+	RunE:  serviceHandler("status"),
 }
 
 var enableCmd = &cobra.Command{
 	Use:   "enable [instance_name]",
 	Short: i18n.T("enable_desc"),
 	Args:  cobra.MaximumNArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("enable", args) },
+	RunE:  serviceHandler("enable"),
 }
 
 var disableCmd = &cobra.Command{
 	Use:   "disable [instance_name]",
 	Short: i18n.T("disable_desc"),
 	Args:  cobra.MaximumNArgs(1),
-	Run:   func(cmd *cobra.Command, args []string) { runServiceCmd("disable", args) },
+	RunE:  serviceHandler("disable"),
+}
+
+func serviceHandler(action string) func(*cobra.Command, []string) error {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) == 0 && UI.NonInteractive {
+			return interaction.MissingFlags("instance_name")
+		}
+		return runServiceCmd(action, args)
+	}
 }
 
 func init() {
@@ -86,36 +96,34 @@ func init() {
 	InstanceCmd.AddCommand(startCmd, stopCmd, restartCmd, reloadCmd, statusCmd, enableCmd, disableCmd)
 }
 
-func runServiceCmd(action string, args []string) {
+func runServiceCmd(action string, args []string) error {
 	instanceName := ""
 	if len(args) > 0 {
 		instanceName = args[0]
 	} else {
 		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
 		if err != nil {
-			fmt.Println(text.FgHiRed.Sprint(err))
-			return
+			return err
 		}
 		instanceName = selected
 	}
-	manageService(action, instanceName)
+	return manageService(action, instanceName)
 }
 
-func manageService(action string, instanceName string) {
-	utils.EnsureInstancePermission(instanceName)
+func manageService(action string, instanceName string) error {
+	if err := utils.CheckInstancePermission(instanceName); err != nil {
+		return err
+	}
 
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
-		fmt.Println(i18n.T("err_not_reg", instanceName))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_not_reg", instanceName), interaction.ExitTarget).WithDetail("instance", instanceName)
 	}
 
 	if action == "status" {
+		var statusCommand *exec.Cmd
 		if meta.User == "root" {
-			cmd := exec.Command("systemctl", "status", fmt.Sprintf("postgresql-%s.service", instanceName))
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			_ = cmd.Run()
+			statusCommand = exec.Command("systemctl", "status", fmt.Sprintf("postgresql-%s.service", instanceName))
 		} else {
 			cmdStr := fmt.Sprintf("systemctl --user status postgresql-%s.service", instanceName)
 			fullCmdStr := utils.BuildInstanceCmd(meta, cmdStr)
@@ -126,26 +134,41 @@ func manageService(action string, instanceName string) {
 			} else {
 				cmd = exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", fullCmdStr)
 			}
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			_ = cmd.Run()
+			statusCommand = cmd
 		}
-		return
+		if UI.Output == string(interaction.OutputJSON) {
+			output, err := statusCommand.CombinedOutput()
+			if err != nil {
+				return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err).WithDetail("output", string(output))
+			}
+			return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": instanceName, "status": string(output)})
+		}
+		statusCommand.Stdout = os.Stdout
+		statusCommand.Stderr = os.Stderr
+		if err := statusCommand.Run(); err != nil {
+			return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err)
+		}
+		return nil
 	}
 
 	var err error
 	if meta.User == "root" {
-		fmt.Printf("Executing: %s for instance '%s' as user 'root'...\n", action, instanceName)
+		fmt.Fprintln(os.Stderr, i18n.T("service_executing", action, instanceName, "root"))
 		err = utils.RunCmd("systemctl", action, fmt.Sprintf("postgresql-%s.service", instanceName))
 	} else {
 		cmd := fmt.Sprintf("systemctl --user %s postgresql-%s.service", action, instanceName)
-		fmt.Printf("Executing: %s for instance '%s' as user '%s'...\n", action, instanceName, meta.User)
+		fmt.Fprintln(os.Stderr, i18n.T("service_executing", action, instanceName, meta.User))
 		err = utils.RunAsUserForInstance(meta.User, meta, cmd)
 	}
 
 	if err != nil {
-		fmt.Println(i18n.T("err_failed", err))
-	} else {
+		return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err)
+	}
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": instanceName, "action": action, "status": "completed"})
+	}
+	if !UI.Quiet {
 		fmt.Println(text.FgHiGreen.Sprint(i18n.T("done")))
 	}
+	return nil
 }

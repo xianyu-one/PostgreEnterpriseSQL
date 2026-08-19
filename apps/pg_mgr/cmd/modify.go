@@ -13,6 +13,7 @@ import (
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -44,18 +45,71 @@ var modifyCmd = &cobra.Command{
 	Aliases: []string{"configure", "edit"},
 	Short:   i18n.T("modify_desc"),
 	Args:    cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		instanceName := ""
 		if len(args) == 1 {
-			runModify(args[0])
-			return
+			instanceName = args[0]
 		}
-		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
-		if err != nil {
-			fmt.Println(text.FgHiRed.Sprint(err))
-			return
+		if UI.NonInteractive && len(args) == 0 {
+			return interaction.MissingFlags("instance_name")
 		}
-		runModify(selected)
+		if instanceName == "" {
+			selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
+			if err != nil {
+				return err
+			}
+			instanceName = selected
+		}
+		if err := utils.CheckInstancePermission(instanceName); err != nil {
+			return err
+		}
+		if UI.NonInteractive && !hasModifyChanges() {
+			return interaction.MissingFlags("one of --port, --bin-path, --data-dir, --os-user, --db-user, --database")
+		}
+		if !UI.NonInteractive && !hasModifyChanges() {
+			if err := promptModifyField(); err != nil {
+				return err
+			}
+		}
+		return runModify(instanceName)
 	},
+}
+
+func hasModifyChanges() bool {
+	return modifyPort != "" || modifyBinPath != "" || modifyDataDir != "" || modifyOSUser != "" || modifyDBUser != "" || modifyDatabaseName != ""
+}
+
+func promptModifyField() error {
+	menu := interaction.NewPrompt(os.Stdin, os.Stderr)
+	choice, err := menu.Menu(i18n.T("prompt_modify_field"), []string{
+		i18n.T("tbl_port"),
+		i18n.T("tbl_ver_path"),
+		i18n.T("tbl_datadir"),
+		i18n.T("tbl_user"),
+		i18n.T("tbl_db_user"),
+		i18n.T("tbl_database_name"),
+	}, 0)
+	if err != nil {
+		return err
+	}
+	switch choice {
+	case 0:
+		modifyPort = utils.PromptInput(i18n.T("prompt_port"), "")
+	case 1:
+		modifyBinPath = utils.PromptPath(i18n.T("prompt_bin_path"), "")
+	case 2:
+		modifyDataDir = utils.PromptPath(i18n.T("prompt_data_dir"), "")
+	case 3:
+		modifyOSUser = utils.PromptInput(i18n.T("prompt_os_user"), "")
+	case 4:
+		modifyDBUser = utils.PromptInput(i18n.T("prompt_db_user"), "")
+	case 5:
+		modifyDatabaseName = utils.PromptInput(i18n.T("prompt_database_name"), "")
+	}
+	if !hasModifyChanges() {
+		return interaction.NewError(interaction.CodeInvalidInput, i18n.T("err_modify_no_flags"), interaction.ExitUsage)
+	}
+	return nil
 }
 
 func init() {
@@ -83,25 +137,14 @@ func init() {
 	InstanceCmd.AddCommand(modifyCmd)
 }
 
-func runModify(instanceName string) {
-	if !modifyCheckPermission(instanceName) {
-		metaUser := "postgres"
-		if meta, ok := config.Global.Instances[instanceName]; ok {
-			metaUser = meta.User
-		}
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", metaUser)))
-		os.Exit(1)
-	}
-
+func runModify(instanceName string) error {
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
-		fmt.Println(i18n.T("err_not_reg", instanceName))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_not_reg", instanceName), interaction.ExitTarget).WithDetail("instance", instanceName)
 	}
 
 	if modifyPort == "" && modifyBinPath == "" && modifyDataDir == "" && modifyOSUser == "" && modifyDBUser == "" && modifyDatabaseName == "" {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_modify_no_flags")))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeMissingInput, i18n.T("err_modify_no_flags"), interaction.ExitUsage)
 	}
 
 	newPort := meta.Port
@@ -132,8 +175,7 @@ func runModify(instanceName string) {
 
 	u, err := user.Lookup(newOSUser)
 	if err != nil {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_user_not_found", newOSUser)))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_user_not_found", newOSUser), interaction.ExitTarget).WithCause(err)
 	}
 
 	// Check if running
@@ -152,7 +194,7 @@ func runModify(instanceName string) {
 			restartNeeded = true
 			stopOldService(instanceName, meta.User)
 		} else {
-			fmt.Println(text.FgHiYellow.Sprint("Warning: Modifications will not take effect until the service is restarted manually."))
+			fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("warn_restart_required")))
 		}
 	}
 
@@ -162,10 +204,9 @@ func runModify(instanceName string) {
 		if isActive && !restartNeeded {
 			stopOldService(instanceName, meta.User)
 		}
-		fmt.Printf("Migrating data directory from %s to %s...\n", oldDataDir, newDataDir)
+		fmt.Fprintln(os.Stderr, i18n.T("migrate_data_start", oldDataDir, newDataDir))
 		if err := utils.MigrateDirectory(oldDataDir, newDataDir); err != nil {
-			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_data_failed", err)))
-			os.Exit(1)
+			return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_migrate_data_failed", err), interaction.ExitExecution).WithCause(err)
 		}
 		fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_data_success", oldDataDir, newDataDir)))
 		dataDirMigrated = true
@@ -181,7 +222,7 @@ func runModify(instanceName string) {
 	if modifyPort != "" {
 		confPath := filepath.Join(newDataDir, "postgresql.conf")
 		if err := utils.UpdatePostgresqlConfParam(confPath, "port", newPort); err != nil {
-			fmt.Printf("Warning: Failed to update port in %s: %v\n", confPath, err)
+			fmt.Fprintln(os.Stderr, i18n.T("warn_port_update", confPath, err))
 		}
 		// Also update .pgrc
 		pgrcPath := filepath.Join(u.HomeDir, ".pgrc")
@@ -194,15 +235,14 @@ func runModify(instanceName string) {
 	serviceChanged := (modifyBinPath != "" || modifyDataDir != "" || modifyOSUser != "")
 	if serviceChanged {
 		if err := utils.ChangeInstanceOwnership(instanceName, meta, newDataDir, newOSUser); err != nil {
-			fmt.Printf("Warning: Failed to update directory ownership: %v\n", err)
+			fmt.Fprintln(os.Stderr, i18n.T("warn_ownership_update", err))
 		}
 		if newOSUser != "root" {
 			_ = utils.RunCmd("loginctl", "enable-linger", newOSUser)
 		}
 		deleteSystemdService(instanceName, meta.User)
 		if err := modifyWriteSystemdService(instanceName, newOSUser, newBinPath, newDataDir); err != nil {
-			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			os.Exit(1)
+			return err
 		}
 	}
 
@@ -218,7 +258,7 @@ func runModify(instanceName string) {
 			} else {
 				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_start_service_failed", err)))
 			}
-			os.Exit(1)
+			return err
 		}
 		if dataDirMigrated && !isActive {
 			// Preserve the original stopped state after the startup test.
@@ -228,8 +268,7 @@ func runModify(instanceName string) {
 
 	// Save only after the new service has passed its startup test.
 	if err := config.SaveInstanceToRegistryWithDatabaseConnection(instanceName, newOSUser, newDataDir, newBinPath, newPort, newDBUser, newDatabaseName); err != nil {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-		os.Exit(1)
+		return err
 	}
 
 	if shouldStart {
@@ -237,6 +276,7 @@ func runModify(instanceName string) {
 	}
 
 	fmt.Println(i18n.T("modify_success", instanceName))
+	return nil
 }
 
 func stopOldService(name, osUser string) {

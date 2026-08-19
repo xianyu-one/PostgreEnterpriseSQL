@@ -15,6 +15,7 @@ import (
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/database"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/logger"
 	"pg_mgr/internal/utils"
 )
@@ -27,44 +28,44 @@ var daemonCmd = &cobra.Command{
 var daemonInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: i18n.T("daemon_install_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runDaemonInstall() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runDaemonInstall() },
 }
 
 var daemonUninstallCmd = &cobra.Command{
 	Use:     "remove",
 	Aliases: []string{"uninstall"},
 	Short:   i18n.T("daemon_uninstall_desc"),
-	Run:     func(cmd *cobra.Command, args []string) { runDaemonUninstall() },
+	RunE:    func(cmd *cobra.Command, args []string) error { return runDaemonUninstall() },
 }
 
 var daemonStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: i18n.T("daemon_start_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runDaemonStart() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runDaemonStart() },
 }
 
 var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: i18n.T("daemon_stop_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runDaemonStop() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runDaemonStop() },
 }
 
 var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: i18n.T("daemon_status_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runDaemonStatus() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runDaemonStatus() },
 }
 
 var daemonRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: i18n.T("daemon_restart_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runDaemonRestart() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runDaemonRestart() },
 }
 
 var daemonReloadCmd = &cobra.Command{
 	Use:   "reload",
 	Short: i18n.T("daemon_reload_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runDaemonReload() },
+	RunE:  func(cmd *cobra.Command, args []string) error { return runDaemonReload() },
 }
 
 var daemonRunCmd = &cobra.Command{
@@ -78,20 +79,23 @@ func init() {
 	RootCmd.AddCommand(daemonCmd)
 }
 
-var ensureRootFunc = func() {
-	utils.EnsureRoot()
-}
+var ensureRootErr error
 
-func ensureRoot() {
+var ensureRootFunc = func() { ensureRootErr = utils.CheckRoot() }
+
+func ensureRoot() error {
+	ensureRootErr = nil
 	ensureRootFunc()
+	return ensureRootErr
 }
 
-func runDaemonInstall() {
-	ensureRoot()
+func runDaemonInstall() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
 	exePath, err := os.Executable()
 	if err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+		return err
 	}
 
 	servicePath := "/etc/systemd/system/pg_mgr.service"
@@ -112,73 +116,106 @@ WantedBy=multi-user.target
 
 	err = os.WriteFile(servicePath, []byte(content), 0644)
 	if err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+		return err
 	}
 
 	if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+		return err
 	}
 	if err := utils.RunCmd("systemctl", "enable", "pg_mgr.service"); err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+		return err
 	}
 
-	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_installed")))
+	return renderDaemonSuccess("installed", i18n.T("daemon_installed"))
 }
 
-func runDaemonUninstall() {
-	ensureRoot()
-	_ = utils.RunCmd("systemctl", "stop", "pg_mgr.service")
-	_ = utils.RunCmd("systemctl", "disable", "pg_mgr.service")
-	_ = os.Remove("/etc/systemd/system/pg_mgr.service")
-	_ = utils.RunCmd("systemctl", "daemon-reload")
-	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_uninstalled")))
-}
-
-func runDaemonStart() {
-	ensureRoot()
-	if err := utils.RunCmd("systemctl", "start", "pg_mgr.service"); err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+func runDaemonUninstall() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
 	}
-	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_started")))
-}
-
-func runDaemonStop() {
-	ensureRoot()
+	if UI.NonInteractive && !UI.Yes {
+		return interaction.MissingFlags("--yes")
+	}
 	if err := utils.RunCmd("systemctl", "stop", "pg_mgr.service"); err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+		return err
 	}
-	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_stopped")))
+	if err := utils.RunCmd("systemctl", "disable", "pg_mgr.service"); err != nil {
+		return err
+	}
+	if err := os.Remove("/etc/systemd/system/pg_mgr.service"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
+		return err
+	}
+	return renderDaemonSuccess("removed", i18n.T("daemon_uninstalled"))
 }
 
-func runDaemonRestart() {
-	ensureRoot()
+func runDaemonStart() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
+	if err := utils.RunCmd("systemctl", "start", "pg_mgr.service"); err != nil {
+		return err
+	}
+	return renderDaemonSuccess("started", i18n.T("daemon_started"))
+}
+
+func runDaemonStop() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
+	if err := utils.RunCmd("systemctl", "stop", "pg_mgr.service"); err != nil {
+		return err
+	}
+	return renderDaemonSuccess("stopped", i18n.T("daemon_stopped"))
+}
+
+func runDaemonRestart() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
 	if err := utils.RunCmd("systemctl", "restart", "pg_mgr.service"); err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+		return err
 	}
-	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_restarted")))
+	return renderDaemonSuccess("restarted", i18n.T("daemon_restarted"))
 }
 
-func runDaemonReload() {
-	ensureRoot()
+func runDaemonReload() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
 	if err := utils.RunCmd("systemctl", "reload", "pg_mgr.service"); err != nil {
-		fmt.Println(i18n.T("daemon_failed", err))
-		os.Exit(1)
+		return err
 	}
-	fmt.Println(text.FgHiGreen.Sprint(i18n.T("daemon_reloaded")))
+	return renderDaemonSuccess("reloaded", i18n.T("daemon_reloaded"))
 }
 
-func runDaemonStatus() {
-	ensureRoot()
+func runDaemonStatus() error {
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
 	cmd := exec.Command("systemctl", "status", "pg_mgr.service")
+	if UI.Output == string(interaction.OutputJSON) {
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return err
+		}
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"service": "pg_mgr.service", "status": string(output)})
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	return cmd.Run()
+}
+
+func renderDaemonSuccess(status, message string) error {
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"service": "pg_mgr.service", "status": status})
+	}
+	if !UI.Quiet {
+		fmt.Println(text.FgHiGreen.Sprint(message))
+	}
+	return nil
 }
 
 func matchCron(cronExpr string, now time.Time) bool {

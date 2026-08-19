@@ -263,4 +263,3 @@ func TestArchiveMigrationPgrmanSync(t *testing.T) {
 		t.Errorf("expected pg_rman.ini to contain %s, got:\n%s", expectedLine, string(iniContent))
 	}
 }
-

@@ -15,6 +15,7 @@ import (
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/database"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -30,43 +31,60 @@ var (
 var archiveCmd = &cobra.Command{
 	Use:   "archive",
 	Short: i18n.T("archive_desc"),
-	Run:   func(cmd *cobra.Command, args []string) { runArchiveStatus(archiveInstance) },
 }
 
 var archiveStatusCmd = &cobra.Command{
 	Use:     "show [instance_name]",
 	Aliases: []string{"status"},
 	Short:   i18n.T("archive_status_desc"),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		inst := archiveInstance
 		if len(args) > 0 {
 			inst = args[0]
 		}
-		runArchiveStatus(inst)
+		if UI.NonInteractive && inst == "" {
+			return interaction.MissingFlags("instance_name or --instance")
+		}
+		return runArchiveStatus(inst)
 	},
 }
 
 var archiveEnableCmd = &cobra.Command{
 	Use:   "enable [instance_name]",
 	Short: i18n.T("archive_enable_desc"),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		inst := archiveInstance
 		if len(args) > 0 {
 			inst = args[0]
 		}
-		runArchiveEnable(inst)
+		if UI.NonInteractive && inst == "" && !UI.LegacySilent {
+			return interaction.MissingFlags("instance_name or --instance")
+		}
+		if UI.NonInteractive && archiveDir == "" && archiveCommand == "" {
+			return interaction.MissingFlags("--dir or --command")
+		}
+		if UI.NonInteractive && !UI.Yes {
+			return interaction.MissingFlags("--yes")
+		}
+		return runArchiveEnable(inst)
 	},
 }
 
 var archiveDisableCmd = &cobra.Command{
 	Use:   "disable [instance_name]",
 	Short: i18n.T("archive_disable_desc"),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		inst := archiveInstance
 		if len(args) > 0 {
 			inst = args[0]
 		}
-		runArchiveDisable(inst)
+		if UI.NonInteractive && inst == "" && !UI.LegacySilent {
+			return interaction.MissingFlags("instance_name or --instance")
+		}
+		if UI.NonInteractive && !UI.Yes {
+			return interaction.MissingFlags("--yes")
+		}
+		return runArchiveDisable(inst)
 	},
 }
 
@@ -74,21 +92,31 @@ var archiveSetCmd = &cobra.Command{
 	Use:     "set [instance_name]",
 	Aliases: []string{"modify"},
 	Short:   i18n.T("archive_set_desc"),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		inst := archiveInstance
 		if len(args) > 0 {
 			inst = args[0]
 		}
-		runArchiveEnable(inst)
+		if UI.NonInteractive && inst == "" && !UI.LegacySilent {
+			return interaction.MissingFlags("instance_name or --instance")
+		}
+		if UI.NonInteractive && archiveDir == "" && archiveCommand == "" {
+			return interaction.MissingFlags("--dir or --command")
+		}
+		if UI.NonInteractive && !UI.Yes {
+			return interaction.MissingFlags("--yes")
+		}
+		return runArchiveEnable(inst)
 	},
 }
 
 func init() {
-	archiveCmd.PersistentFlags().StringVarP(&archiveInstance, "instance", "i", "", "Target instance name")
-	archiveCmd.PersistentFlags().StringVarP(&archiveDir, "dir", "d", "", "WAL archive target directory")
-	archiveCmd.PersistentFlags().StringVarP(&archiveCommand, "command", "c", "", "Custom pg_mgr archive command")
-	archiveCmd.PersistentFlags().BoolVarP(&archiveSilent, "silent", "s", false, "Run in silent mode")
-	archiveCmd.PersistentFlags().BoolVarP(&archiveMigrate, "migrate", "m", false, "Migrate existing WAL archive files to the new directory")
+	archiveCmd.PersistentFlags().StringVarP(&archiveInstance, "instance", "i", "", i18n.T("flag_instance"))
+	archiveCmd.PersistentFlags().StringVarP(&archiveDir, "dir", "d", "", i18n.T("flag_archive_dir"))
+	archiveCmd.PersistentFlags().StringVarP(&archiveCommand, "command", "c", "", i18n.T("flag_archive_command"))
+	archiveCmd.PersistentFlags().BoolVarP(&archiveSilent, "silent", "s", false, i18n.T("flag_silent_deprecated"))
+	_ = archiveCmd.PersistentFlags().MarkDeprecated("silent", i18n.T("flag_silent_replacement"))
+	archiveCmd.PersistentFlags().BoolVarP(&archiveMigrate, "migrate", "m", false, i18n.T("flag_archive_migrate"))
 
 	compFunc := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		var list []string
@@ -108,11 +136,11 @@ func init() {
 	RootCmd.AddCommand(archiveCmd)
 }
 
-func runArchiveStatus(instanceName string) {
+func runArchiveStatus(instanceName string) error {
 	if instanceName == "" {
 		if len(config.Global.Instances) == 0 {
 			fmt.Println(i18n.T("err_no_instances"))
-			return
+			return nil
 		}
 		t := table.NewWriter()
 		t.SetOutputMirror(os.Stdout)
@@ -142,13 +170,12 @@ func runArchiveStatus(instanceName string) {
 		}
 		t.SetStyle(table.StyleLight)
 		t.Render()
-		return
+		return nil
 	}
 
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", instanceName)))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_inst_not_found", instanceName), interaction.ExitTarget).WithDetail("instance", instanceName)
 	}
 
 	confPath := filepath.Join(meta.DataDir, "postgresql.conf")
@@ -158,20 +185,24 @@ func runArchiveStatus(instanceName string) {
 	}
 	fullCmd, _ := utils.GetPostgresqlConfParam(confPath, "archive_command")
 	userPart, pgMgrPart := utils.ParseArchiveCommand(fullCmd)
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": instanceName, "archive_mode": arcMode, "archive_command": fullCmd, "pg_mgr_archive_command": pgMgrPart, "user_archive_command": userPart})
+	}
 
 	fmt.Printf("%s: %s\n", i18n.T("lbl_archive_mode"), text.FgHiCyan.Sprint(arcMode))
 	fmt.Printf("%s: %s\n", i18n.T("lbl_archive_cmd"), fullCmd)
 	fmt.Printf("%s: %s\n", i18n.T("lbl_pgmgr_archive_cmd"), pgMgrPart)
 	fmt.Printf("%s: %s\n", i18n.T("lbl_user_archive_cmd"), userPart)
+	return nil
 }
 
-func runArchiveEnable(instanceName string) {
+func runArchiveEnable(instanceName string) error {
 	if instanceName == "" {
 		if !archiveSilent {
 			selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
 			if err != nil {
 				fmt.Println(text.FgHiRed.Sprint(err))
-				return
+				return err
 			}
 			instanceName = selected
 		} else {
@@ -181,13 +212,11 @@ func runArchiveEnable(instanceName string) {
 
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", instanceName)))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_inst_not_found", instanceName), interaction.ExitTarget).WithDetail("instance", instanceName)
 	}
 
 	if !archiveCheckRoot() && !utils.IsRootOrUser(meta.User) {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", meta.User)))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodePermissionDenied, i18n.T("req_root_or_user", meta.User), interaction.ExitPermission).WithDetail("allowed_identities", []string{"root", meta.User})
 	}
 
 	confPath := filepath.Join(meta.DataDir, "postgresql.conf")
@@ -229,12 +258,11 @@ func runArchiveEnable(instanceName string) {
 		}
 
 		if oldArchiveDir != "" && targetDir != oldArchiveDir && doMigrate {
-			fmt.Printf("Migrating WAL archive directory from %s to %s...\n", oldArchiveDir, targetDir)
+			fmt.Fprintln(os.Stderr, i18n.T("migrate_archive_start", oldArchiveDir, targetDir))
 			if err := utils.MigrateDirectory(oldArchiveDir, targetDir); err != nil {
-				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_archive_failed", err)))
-				os.Exit(1)
+				return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_migrate_archive_failed", err), interaction.ExitExecution).WithCause(err)
 			} else {
-				fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_archive_success", oldArchiveDir, targetDir)))
+				fmt.Fprintln(os.Stderr, text.FgGreen.Sprint(i18n.T("migrate_archive_success", oldArchiveDir, targetDir)))
 			}
 		}
 
@@ -273,8 +301,7 @@ func runArchiveEnable(instanceName string) {
 	}
 
 	if newPgMgrCmd == "" {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_archive_no_cmd")))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeMissingInput, i18n.T("err_archive_no_cmd"), interaction.ExitUsage)
 	}
 
 	newFullCmd := utils.BuildArchiveCommand(userPart, newPgMgrCmd)
@@ -282,12 +309,10 @@ func runArchiveEnable(instanceName string) {
 	oldMode, _ := utils.GetPostgresqlConfParam(confPath, "archive_mode")
 
 	if err := utils.UpdatePostgresqlConfParam(confPath, "archive_mode", "on"); err != nil {
-		fmt.Printf("Failed to update archive_mode in %s: %v\n", confPath, err)
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err)
 	}
 	if err := utils.UpdatePostgresqlConfParam(confPath, "archive_command", newFullCmd); err != nil {
-		fmt.Printf("Failed to update archive_command in %s: %v\n", confPath, err)
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err)
 	}
 
 	var statusCmd string
@@ -303,9 +328,9 @@ func runArchiveEnable(instanceName string) {
 			if !archiveSilent && utils.PromptConfirm("archive_mode requires a database restart to take effect. Restart now?") {
 				stopOldService(instanceName, meta.User)
 				startNewService(instanceName, meta.User)
-				fmt.Println(text.FgGreen.Sprint(i18n.T("restart_success", instanceName)))
+				fmt.Fprintln(os.Stderr, text.FgGreen.Sprint(i18n.T("restart_success", instanceName)))
 			} else {
-				fmt.Println(text.FgHiYellow.Sprint("Warning: archive_mode changed from off to on. Please restart PostgreSQL instance manually to apply."))
+				fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("warn_archive_enable_restart")))
 			}
 		} else {
 			if meta.User == "root" {
@@ -313,23 +338,29 @@ func runArchiveEnable(instanceName string) {
 			} else {
 				utils.RunAsUser(meta.User, fmt.Sprintf("systemctl --user reload postgresql-%s.service", instanceName))
 			}
-			fmt.Println(text.FgGreen.Sprint("PostgreSQL configuration reloaded."))
+			fmt.Fprintln(os.Stderr, text.FgGreen.Sprint(i18n.T("postgres_reloaded")))
 		}
 
 		restartArchiverBackend(instanceName, meta)
 	}
 
-	fmt.Println(text.FgGreen.Sprint(i18n.T("archive_enable_success", instanceName)))
-	fmt.Println(text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": instanceName, "archive_mode": "on", "archive_command": newFullCmd, "status": "configured"})
+	}
+	if !UI.Quiet {
+		fmt.Println(text.FgGreen.Sprint(i18n.T("archive_enable_success", instanceName)))
+	}
+	fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
+	return nil
 }
 
-func runArchiveDisable(instanceName string) {
+func runArchiveDisable(instanceName string) error {
 	if instanceName == "" {
 		if !archiveSilent {
 			selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
 			if err != nil {
 				fmt.Println(text.FgHiRed.Sprint(err))
-				return
+				return err
 			}
 			instanceName = selected
 		} else {
@@ -339,13 +370,11 @@ func runArchiveDisable(instanceName string) {
 
 	meta, ok := config.Global.Instances[instanceName]
 	if !ok {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("err_inst_not_found", instanceName)))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_inst_not_found", instanceName), interaction.ExitTarget).WithDetail("instance", instanceName)
 	}
 
 	if !archiveCheckRoot() && !utils.IsRootOrUser(meta.User) {
-		fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root_or_user", meta.User)))
-		os.Exit(1)
+		return interaction.NewError(interaction.CodePermissionDenied, i18n.T("req_root_or_user", meta.User), interaction.ExitPermission).WithDetail("allowed_identities", []string{"root", meta.User})
 	}
 
 	confPath := filepath.Join(meta.DataDir, "postgresql.conf")
@@ -355,8 +384,7 @@ func runArchiveDisable(instanceName string) {
 	newFullCmd := utils.BuildArchiveCommand(userPart, "")
 
 	if err := utils.UpdatePostgresqlConfParam(confPath, "archive_command", newFullCmd); err != nil {
-		fmt.Printf("Failed to update archive_command in %s: %v\n", confPath, err)
-		os.Exit(1)
+		return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err)
 	}
 
 	if userPart == "" {
@@ -377,7 +405,7 @@ func runArchiveDisable(instanceName string) {
 				stopOldService(instanceName, meta.User)
 				startNewService(instanceName, meta.User)
 			} else {
-				fmt.Println(text.FgHiYellow.Sprint("Warning: archive_mode set to off. Please restart PostgreSQL instance manually to apply."))
+				fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("warn_archive_disable_restart")))
 			}
 		} else {
 			if meta.User == "root" {
@@ -385,14 +413,20 @@ func runArchiveDisable(instanceName string) {
 			} else {
 				utils.RunAsUser(meta.User, fmt.Sprintf("systemctl --user reload postgresql-%s.service", instanceName))
 			}
-			fmt.Println(text.FgGreen.Sprint("PostgreSQL configuration reloaded."))
+			fmt.Fprintln(os.Stderr, text.FgGreen.Sprint(i18n.T("postgres_reloaded")))
 		}
 
 		restartArchiverBackend(instanceName, meta)
 	}
 
-	fmt.Println(text.FgGreen.Sprint(i18n.T("archive_disable_success", instanceName)))
-	fmt.Println(text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": instanceName, "archive_mode": map[bool]string{true: "off", false: "on"}[userPart == ""], "status": "pg_mgr_archive_disabled"})
+	}
+	if !UI.Quiet {
+		fmt.Println(text.FgGreen.Sprint(i18n.T("archive_disable_success", instanceName)))
+	}
+	fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
+	return nil
 }
 
 func restartArchiverBackend(instanceName string, meta config.InstanceMeta) {

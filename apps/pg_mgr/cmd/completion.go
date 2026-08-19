@@ -21,7 +21,7 @@ var compInstallCmd = &cobra.Command{
 	Short:     "Install completion script",
 	Args:      cobra.ExactArgs(1),
 	ValidArgs: []string{"bash", "zsh"},
-	Run:       func(cmd *cobra.Command, args []string) { handleCompletion(cmd, args, "install") },
+	RunE:      func(cmd *cobra.Command, args []string) error { return handleCompletion(cmd, args, "install") },
 }
 
 var compUninstallCmd = &cobra.Command{
@@ -30,7 +30,7 @@ var compUninstallCmd = &cobra.Command{
 	Short:     "Uninstall completion script",
 	Args:      cobra.ExactArgs(1),
 	ValidArgs: []string{"bash", "zsh"},
-	Run:       func(cmd *cobra.Command, args []string) { handleCompletion(cmd, args, "uninstall") },
+	RunE:      func(cmd *cobra.Command, args []string) error { return handleCompletion(cmd, args, "uninstall") },
 }
 
 func init() {
@@ -38,14 +38,16 @@ func init() {
 	RootCmd.AddCommand(completionCmd)
 }
 
-func handleCompletion(cmd *cobra.Command, args []string, action string) {
+func handleCompletion(cmd *cobra.Command, args []string, action string) error {
 	if len(args) == 0 {
 		cmd.Help()
-		return
+		return nil
 	}
 	shell := args[0]
 
-	utils.EnsureRoot()
+	if err := utils.CheckRoot(); err != nil {
+		return err
+	}
 
 	var targetFile string
 	switch shell {
@@ -54,8 +56,8 @@ func handleCompletion(cmd *cobra.Command, args []string, action string) {
 	case "zsh":
 		targetFile = "/usr/local/share/zsh/site-functions/_pg_mgr"
 	default:
-		fmt.Println("Unsupported shell. Use 'bash' or 'zsh'.")
-		return
+		fmt.Fprintln(os.Stderr, i18n.T("completion_unsupported"))
+		return fmt.Errorf("unsupported shell %q", shell)
 	}
 
 	if action == "install" {
@@ -65,7 +67,7 @@ func handleCompletion(cmd *cobra.Command, args []string, action string) {
 		file, err := os.OpenFile(targetFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
-			return
+			return err
 		}
 		defer file.Close()
 
@@ -74,12 +76,13 @@ func handleCompletion(cmd *cobra.Command, args []string, action string) {
 		} else {
 			cmd.Root().GenZshCompletion(file)
 		}
-		fmt.Printf("%s\nReload your shell to apply changes.\n", text.FgHiGreen.Sprint(i18n.T("done")))
+		fmt.Printf("%s\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")), i18n.T("completion_reload"))
 	} else if action == "uninstall" {
 		if err := os.Remove(targetFile); err != nil && !os.IsNotExist(err) {
-			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
+			return err
 		} else {
 			fmt.Println(text.FgHiGreen.Sprint(i18n.T("done")))
 		}
 	}
+	return nil
 }

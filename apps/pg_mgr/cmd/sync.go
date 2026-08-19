@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -22,12 +21,12 @@ var (
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Scan running PostgreSQL processes and update the global registry configuration",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if !checkRoot() {
-			fmt.Println(text.FgHiRed.Sprint(i18n.T("req_root")))
-			os.Exit(1)
+			return utils.CheckRoot()
 		}
 		scanAndSyncInstances()
+		return nil
 	},
 }
 

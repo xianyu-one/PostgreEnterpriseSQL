@@ -22,11 +22,12 @@ import (
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 )
 
 func PromptInput(label string, defaultVal string) string {
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("%s [%s]: ", text.FgCyan.Sprint(label), text.FgGreen.Sprint(defaultVal))
+	fmt.Fprintf(os.Stderr, "%s [%s]: ", text.FgCyan.Sprint(label), text.FgGreen.Sprint(defaultVal))
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -40,9 +41,10 @@ func PromptConfirm(label string) bool {
 }
 
 func PromptBool(label string, defaultVal bool) bool {
-	fmt.Println(text.FgHiYellow.Sprint(label))
-	fmt.Printf("  1. %s\n", i18n.T("option_yes"))
-	fmt.Printf("  2. %s\n", i18n.T("option_no"))
+	fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(label))
+	fmt.Fprintf(os.Stderr, "  1. %s\n", i18n.T("option_yes"))
+	fmt.Fprintf(os.Stderr, "  2. %s\n", i18n.T("option_no"))
+	fmt.Fprintln(os.Stderr, "  0. Cancel")
 	defaultIndex := 1
 	if defaultVal {
 		defaultIndex = 0
@@ -61,11 +63,14 @@ func PromptSelect(label string, itemCount, defaultIndex int) (int, error) {
 	}
 	for {
 		value := PromptInput(label, strconv.Itoa(defaultIndex+1))
+		if value == "0" {
+			return -1, interaction.ErrCancelled
+		}
 		index, err := strconv.Atoi(value)
 		if err == nil && index >= 1 && index <= itemCount {
 			return index - 1, nil
 		}
-		fmt.Printf("%s\n", text.FgHiRed.Sprintf("Please enter a number between 1 and %d.", itemCount))
+		fmt.Fprintln(os.Stderr, text.FgHiRed.Sprint(i18n.T("menu_valid_range_legacy", itemCount)))
 	}
 }
 
@@ -113,10 +118,10 @@ func PromptNewPassword(label, confirmLabel, mismatchMessage string) (string, err
 }
 
 func readSecret(reader *bufio.Reader, label string) (string, error) {
-	fmt.Printf("%s: ", text.FgCyan.Sprint(label))
+	fmt.Fprintf(os.Stderr, "%s: ", text.FgCyan.Sprint(label))
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		value, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println()
+		fmt.Fprintln(os.Stderr)
 		return string(value), err
 	}
 	value, err := reader.ReadString('\n')
