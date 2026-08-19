@@ -55,6 +55,50 @@ func TestUntarGzExtractsHardLinks(t *testing.T) {
 	}
 }
 
+func TestUntarGzTruncatesExistingFiles(t *testing.T) {
+	var archive bytes.Buffer
+	gzipWriter := gzip.NewWriter(&archive)
+	tarWriter := tar.NewWriter(gzipWriter)
+	zoneData := []byte("TZif replacement")
+
+	if err := tarWriter.WriteHeader(&tar.Header{
+		Name: "share/timezone/Asia/Taipei",
+		Mode: 0644,
+		Size: int64(len(zoneData)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write(zoneData); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	targetDir := t.TempDir()
+	zonePath := filepath.Join(targetDir, "share/timezone/Asia/Taipei")
+	if err := os.MkdirAll(filepath.Dir(zonePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zonePath, []byte("TZif replacement with stale trailing bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := UntarGz(bytes.NewReader(archive.Bytes()), targetDir, os.Getuid(), os.Getgid()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(zonePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, zoneData) {
+		t.Fatalf("overwritten timezone data = %q, want %q", got, zoneData)
+	}
+}
+
 func TestParseLogindRemoveIPC(t *testing.T) {
 	tests := []struct {
 		name    string

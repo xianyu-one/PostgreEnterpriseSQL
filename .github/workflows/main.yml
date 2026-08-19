@@ -9,9 +9,9 @@ on:
         default: '16.14'
         type: string
       pesql_tag:
-        description: 'PESQL 源码 Tag/版本 (默认: latest 表示自动使用最新的 vx.x.x Tag)'
+        description: 'PESQL 源码版本 (current=当前触发分支，latest=最新 Tag，或填写 Tag/ref)'
         required: true
-        default: 'latest'
+        default: 'current'
         type: string
       os_identifier:
         description: '操作系统标识'
@@ -181,23 +181,24 @@ jobs:
             ARCH_FOR_FILENAME="x64"
           fi
           
-          # Determine PESQL version and checkout target tag/ref if requested
-          if [ -z "$PESQL_INPUT" ] || [ "$PESQL_INPUT" == "latest" ]; then
+          # Build the ref that triggered this workflow by default. Checking out
+          # the latest release tag here can silently replace a newer Dockerfile.
+          if [ -z "$PESQL_INPUT" ] || [ "$PESQL_INPUT" == "current" ]; then
+            PESQL_VER=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --exact-match 2>/dev/null || true)
+            if [ -z "$PESQL_VER" ]; then
+              SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
+              PESQL_VER="snapshot-${SHA}"
+            fi
+            echo "Building current workflow ref: $(git rev-parse --short HEAD)"
+          elif [ "$PESQL_INPUT" == "latest" ]; then
             LATEST_TAG=$(git tag -l "v*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n 1)
             if [ -n "$LATEST_TAG" ]; then
               echo "Checking out latest PESQL tag: ${LATEST_TAG}"
               git checkout "$LATEST_TAG"
               PESQL_VER="$LATEST_TAG"
             else
-              if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-                PESQL_VER=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --exact-match 2>/dev/null || true)
-                if [ -z "$PESQL_VER" ]; then
-                  SHA=$(git rev-parse --short HEAD 2>/dev/null || true)
-                  PESQL_VER="snapshot-${SHA}"
-                fi
-              else
-                PESQL_VER="unknown"
-              fi
+              echo "No PESQL release tag matching vx.x.x was found" >&2
+              exit 1
             fi
           else
             echo "Checking out specified PESQL tag/ref: ${PESQL_INPUT}"
@@ -364,6 +365,15 @@ jobs:
             USE_CHINA_MIRROR=${{ steps.prep.outputs.use_china_mirror }}
             PESQL_VERSION=${{ steps.prep.outputs.pesql_version }}
           outputs: type=local,dest=./output
+
+      - name: Verify extensions in artifact
+        run: |
+          ARCHIVE="./output/${{ steps.prep.outputs.archive_name }}"
+          tar -tzf "$ARCHIVE" > /tmp/pesql-archive-files.txt
+          grep -Fx './lib/postgis-3.so' /tmp/pesql-archive-files.txt
+          grep -Fx './lib/vector.so' /tmp/pesql-archive-files.txt
+          grep -Fx './share/extension/postgis.control' /tmp/pesql-archive-files.txt
+          grep -Fx './share/extension/vector.control' /tmp/pesql-archive-files.txt
 
       - name: Upload Artifact to Release
         uses: softprops/action-gh-release@v2

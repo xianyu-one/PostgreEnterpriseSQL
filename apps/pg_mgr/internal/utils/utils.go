@@ -21,6 +21,7 @@ import (
 	"golang.org/x/term"
 
 	"pg_mgr/internal/config"
+	"pg_mgr/internal/i18n"
 )
 
 func PromptInput(label string, defaultVal string) string {
@@ -35,28 +36,19 @@ func PromptInput(label string, defaultVal string) string {
 }
 
 func PromptConfirm(label string) bool {
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("%s ", text.FgHiYellow.Sprint(label))
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(strings.ToLower(input))
-	return input == "y" || input == "yes"
+	return PromptBool(label, false)
 }
 
 func PromptBool(label string, defaultVal bool) bool {
-	defaultText := "y"
-	if !defaultVal {
-		defaultText = "n"
+	fmt.Println(text.FgHiYellow.Sprint(label))
+	fmt.Printf("  1. %s\n", i18n.T("option_yes"))
+	fmt.Printf("  2. %s\n", i18n.T("option_no"))
+	defaultIndex := 1
+	if defaultVal {
+		defaultIndex = 0
 	}
-	for {
-		value := strings.ToLower(PromptInput(label, defaultText))
-		switch value {
-		case "y", "yes":
-			return true
-		case "n", "no":
-			return false
-		}
-		fmt.Println(text.FgHiRed.Sprint("Please enter y or n."))
-	}
+	index, _ := PromptSelect(i18n.T("prompt_select_option"), 2, defaultIndex)
+	return index == 0
 }
 
 // PromptSelect asks the user to select a numbered item. The returned index is zero-based.
@@ -343,7 +335,7 @@ func UntarGz(gzipStream io.Reader, targetDir string, uid, gid int) error {
 			dir := filepath.Dir(target)
 			os.MkdirAll(dir, 0755)
 			os.Chown(dir, uid, gid)
-			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(header.Mode))
 			if err != nil {
 				return err
 			}

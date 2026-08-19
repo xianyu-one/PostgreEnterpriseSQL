@@ -139,7 +139,7 @@ func runInstall(cmd *cobra.Command) {
 	pgBin := filepath.Join(versionPathFull, "bin", "postgres")
 	if _, err := os.Stat(pgBin); err == nil {
 		if !Config.Silent {
-			overwritePrompt := fmt.Sprintf("Version %s.%s is already installed at %s. Do you want to overwrite it?", Config.MajorVersion, Config.MinorVersion, versionPathFull)
+			overwritePrompt := i18n.T("confirm_overwrite_version", Config.MajorVersion, Config.MinorVersion, versionPathFull)
 			if !utils.PromptConfirm(overwritePrompt) {
 				fmt.Println(i18n.T("abort"))
 				return

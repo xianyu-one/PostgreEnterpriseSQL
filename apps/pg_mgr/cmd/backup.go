@@ -391,8 +391,7 @@ func runPgrmanUninit() {
 	}
 
 	if choice == "2" {
-		confirm := utils.PromptInput(i18n.T("confirm_delete_backup_dir", backupDir), "N")
-		if strings.ToLower(confirm) == "y" || strings.ToLower(confirm) == "yes" {
+		if utils.PromptConfirm(i18n.T("confirm_delete_backup_dir", backupDir)) {
 			if backupDir != "" && backupDir != "/" {
 				err := os.RemoveAll(backupDir)
 				if err != nil {
