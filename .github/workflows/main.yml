@@ -86,6 +86,18 @@ jobs:
           REPMGR_INPUT="${{ github.event.inputs.repmgr_version }}"
           POSTGIS_INPUT="${{ github.event.inputs.postgis_version }}"
           PGVECTOR_INPUT="${{ github.event.inputs.pgvector_version }}"
+          USE_CHINA_MIRROR="${{ inputs.use_china_mirror == true }}"
+
+          case "$USE_CHINA_MIRROR" in
+            true|false)
+              ;;
+            *)
+              echo "Invalid use_china_mirror value: ${USE_CHINA_MIRROR}" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "use_china_mirror=${USE_CHINA_MIRROR}" >> "$GITHUB_OUTPUT"
 
           resolve_component_version() {
             local input="$1"
@@ -215,6 +227,7 @@ jobs:
           echo "repmgr Version: ${REPMGR_VERSION}"
           echo "PostGIS Version: ${POSTGIS_VERSION}"
           echo "pgvector Version: ${PGVECTOR_VERSION}"
+          echo "Use China Mirror: ${USE_CHINA_MIRROR}"
           echo "PESQL Version: ${PESQL_VER}"
 
       - name: Manage Release Notes
@@ -348,7 +361,7 @@ jobs:
             REPMGR_VERSION=${{ steps.prep.outputs.repmgr_version }}
             POSTGIS_VERSION=${{ steps.prep.outputs.postgis_version }}
             PGVECTOR_VERSION=${{ steps.prep.outputs.pgvector_version }}
-            USE_CHINA_MIRROR=${{ github.event.inputs.use_china_mirror }}
+            USE_CHINA_MIRROR=${{ steps.prep.outputs.use_china_mirror }}
             PESQL_VERSION=${{ steps.prep.outputs.pesql_version }}
           outputs: type=local,dest=./output
 
