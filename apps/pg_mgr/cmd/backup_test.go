@@ -111,7 +111,7 @@ func TestBuildPgRmanBackupCommandUsesDatabaseUser(t *testing.T) {
 	meta := config.InstanceMeta{
 		Port:    "51721",
 		DataDir: "/data/instance",
-		Pgrman:  &config.PgrmanConfig{BackupDir: "/backup/instance"},
+		Pgrman:  &config.PgrmanConfig{BackupDir: "/backup/instance", ArcLogPath: "/archive/instance", SrvLogPath: "/logs/instance"},
 	}
 	command := buildPgRmanBackupCommand(meta, "full", database.Connection{User: "dbadmin", Database: "appdb"})
 	if !strings.Contains(command, "-U 'dbadmin'") {
@@ -119,6 +119,53 @@ func TestBuildPgRmanBackupCommandUsesDatabaseUser(t *testing.T) {
 	}
 	if !strings.Contains(command, "-d 'appdb'") {
 		t.Fatalf("backup command does not specify database name: %s", command)
+	}
+	if !strings.Contains(command, "-A '/archive/instance'") {
+		t.Fatalf("backup command does not specify archive log path: %s", command)
+	}
+	if !strings.Contains(command, "-S '/logs/instance'") {
+		t.Fatalf("backup command does not specify server log path: %s", command)
+	}
+}
+
+func TestRecoverPgrmanConfigFromCatalogRestoresMissingPaths(t *testing.T) {
+	backupDir := t.TempDir()
+	ini := "SRVLOG_PATH='/data/log'\nARCLOG_PATH='/data/archive'\nCOMPRESS_DATA=YES\nKEEP_ARCLOG_DAYS=7\nKEEP_SRVLOG_DAYS=14\nKEEP_DATA_DAYS=21\n"
+	if err := os.WriteFile(filepath.Join(backupDir, "pg_rman.ini"), []byte(ini), 0644); err != nil {
+		t.Fatal(err)
+	}
+	meta := config.InstanceMeta{Pgrman: &config.PgrmanConfig{Tool: "pgrman", BackupDir: backupDir}}
+	recovered, changed, err := recoverPgrmanConfigFromCatalog(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected missing backup configuration to be recovered")
+	}
+	if recovered.Pgrman.SrvLogPath != "/data/log" || recovered.Pgrman.ArcLogPath != "/data/archive" {
+		t.Fatalf("recovered paths = %#v", recovered.Pgrman)
+	}
+	if recovered.Pgrman.KeepDataDays != 21 || recovered.Pgrman.CompressData != "YES" {
+		t.Fatalf("recovered settings = %#v", recovered.Pgrman)
+	}
+}
+
+func TestPgrmanArchiveLogPathFallsBackToManagedArchiveCommand(t *testing.T) {
+	dataDir := t.TempDir()
+	conf := "archive_command = 'true PG_MGR_ARCHIVE_START ; export PG_ARCHDIR=/archive/from-conf && cp %p $PG_ARCHDIR/%f && true PG_MGR_ARCHIVE_END'\n"
+	if err := os.WriteFile(filepath.Join(dataDir, "postgresql.conf"), []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	meta := config.InstanceMeta{DataDir: dataDir, Pgrman: &config.PgrmanConfig{BackupDir: "/backup"}}
+	if got := pgrmanArchiveLogPath(meta); got != "/archive/from-conf" {
+		t.Fatalf("pgrmanArchiveLogPath() = %q", got)
+	}
+}
+
+func TestPgrmanServerLogPathFallsBackToDataLogDirectory(t *testing.T) {
+	meta := config.InstanceMeta{DataDir: "/data/instance", Pgrman: &config.PgrmanConfig{BackupDir: "/backup"}}
+	if got := pgrmanServerLogPath(meta); got != "/data/instance/log" {
+		t.Fatalf("pgrmanServerLogPath() = %q", got)
 	}
 }
 

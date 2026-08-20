@@ -250,9 +250,14 @@ source %s
 			"PGDATA":            fmt.Sprintf("'%s'", dataDir),
 			"LD_LIBRARY_PATH":   fmt.Sprintf("':%s/lib/'", versionPathFull),
 			"PGPORT":            fmt.Sprintf("'%d'", Config.Port),
+			"PGUSER":            "'postgres'",
+			"PGDATABASE":        "'postgres'",
 		}
 
 		if err := utils.UpdatePgrc(pgrcPath, envs); err != nil {
+			return err
+		}
+		if err := ensurePgMgrUseShellIntegration(pgrcPath); err != nil {
 			return err
 		}
 		os.Chown(pgrcPath, uid, gid)

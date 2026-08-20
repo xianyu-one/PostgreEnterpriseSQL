@@ -255,20 +255,16 @@ func ParseLogindRemoveIPC(content string) string {
 func RunAsUser(username string, cmdStr string) error {
 	currUser, err := GetCurrentOSUser()
 	if err == nil && currUser == username {
-		cmd := exec.Command("bash", "-c", cmdStr)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%v: %s", err, stderr.String())
+		out, runErr := exec.Command("bash", "-c", cmdStr).CombinedOutput()
+		if runErr != nil {
+			return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
 	// Use -s /bin/bash to ensure execution works even if the user has /bin/false or /usr/sbin/nologin
-	cmd := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%v: %s", err, stderr.String())
+	out, runErr := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr).CombinedOutput()
+	if runErr != nil {
+		return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -296,6 +292,27 @@ func RunAsUserWithCombinedOutput(username string, cmdStr string) (string, error)
 	}
 	out, runErr := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr).CombinedOutput()
 	return string(out), runErr
+}
+
+// RunAsUserWithLiveOutput streams a command's combined stdout/stderr to writer
+// while retaining the same output for error reporting.
+func RunAsUserWithLiveOutput(username, cmdStr string, writer io.Writer) (string, error) {
+	if writer == nil {
+		writer = io.Discard
+	}
+	var captured bytes.Buffer
+	combined := io.MultiWriter(writer, &captured)
+	currUser, err := GetCurrentOSUser()
+	var cmd *exec.Cmd
+	if err == nil && currUser == username {
+		cmd = exec.Command("bash", "-c", cmdStr)
+	} else {
+		cmd = exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr)
+	}
+	cmd.Stdout = combined
+	cmd.Stderr = combined
+	runErr := cmd.Run()
+	return captured.String(), runErr
 }
 
 func ExtractRegexFromFile(filepath string, pattern string) string {

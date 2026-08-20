@@ -1,32 +1,37 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/config"
+	"pg_mgr/internal/database"
 	"pg_mgr/internal/i18n"
 	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
 type UpgradeConfig struct {
-	InstanceName  string
-	TargetVersion string
-	Silent        bool
+	InstanceName       string
+	TargetVersion      string
+	Silent             bool
+	SkipBackup         bool
+	AcceptNoBackupRisk bool
 }
 
 var UpgConfig UpgradeConfig
+var upgradeEnsureRoot = utils.EnsureRoot
 
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
@@ -44,6 +49,8 @@ func init() {
 		return list, cobra.ShellCompDirectiveNoFileComp
 	})
 	upgradeCmd.Flags().StringVarP(&UpgConfig.TargetVersion, "target-version", "t", "", i18n.T("flag_target_version"))
+	upgradeCmd.Flags().BoolVar(&UpgConfig.SkipBackup, "skip-backup", false, i18n.T("flag_skip_upgrade_backup"))
+	upgradeCmd.Flags().BoolVar(&UpgConfig.AcceptNoBackupRisk, "accept-no-backup-risk", false, i18n.T("flag_accept_no_backup_risk"))
 	upgradeCmd.Flags().BoolVarP(&UpgConfig.Silent, "silent", "s", false, i18n.T("flag_silent_deprecated"))
 	_ = upgradeCmd.Flags().MarkDeprecated("silent", i18n.T("flag_silent_replacement"))
 
@@ -89,6 +96,9 @@ func getVersionFromBinPath(baseDir, binPath, osUser string) (utils.PGVersion, er
 }
 
 func runUpgrade() error {
+	if err := upgradeEnsureRoot(); err != nil {
+		return err
+	}
 	if !UpgConfig.Silent {
 		selected, err := promptInstance(i18n.T("prompt_select_instance"), nil)
 		if err != nil {
@@ -116,6 +126,14 @@ func runUpgrade() error {
 	if !ok {
 		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_not_reg", UpgConfig.InstanceName), interaction.ExitTarget)
 	}
+	meta, err := recoverAndPersistPgrmanConfig(UpgConfig.InstanceName, meta)
+	if err != nil {
+		return err
+	}
+	if UpgConfig.AcceptNoBackupRisk && !UpgConfig.SkipBackup {
+		return interaction.NewError(interaction.CodeInvalidInput, i18n.T("err_backup_risk_without_skip"), interaction.ExitUsage)
+	}
+	managedBackup := hasManagedUpgradeBackup(meta)
 
 	baseDir := config.Global.BaseDir
 	osUser := meta.User
@@ -190,42 +208,32 @@ func runUpgrade() error {
 		if UpgConfig.Silent {
 			targetVer = recommended
 		} else {
-			fmt.Println(text.FgHiCyan.Sprint(i18n.T("upgrade_found", UpgConfig.InstanceName, currentVer.Raw)))
-			t := table.NewWriter()
-			t.SetOutputMirror(os.Stdout)
-			t.AppendHeader(table.Row{"ID", "Version", "Upgrade Type", "Recommended"})
-			for i, c := range candidates {
-				upgType := "Major Upgrade"
+			fmt.Fprintln(os.Stderr, text.FgHiCyan.Sprint(i18n.T("upgrade_found", UpgConfig.InstanceName, currentVer.Raw)))
+			items := make([]string, 0, len(candidates))
+			for _, c := range candidates {
+				upgType := i18n.T("upgrade_type_major")
 				if c.Major == currentVer.Major {
-					upgType = "Minor Upgrade"
+					upgType = i18n.T("upgrade_type_minor")
 				}
 				recStr := ""
 				if utils.CompareVersions(c, recommended) == 0 {
-					recStr = "[Recommended]"
+					recStr = " (" + i18n.T("upgrade_recommended") + ")"
 				}
-				t.AppendRow(table.Row{i + 1, c.Raw, upgType, recStr})
+				items = append(items, fmt.Sprintf("PostgreSQL %s — %s%s", c.Raw, upgType, recStr))
 			}
-			t.Render()
 
 			recIdx := 0
 			for i, c := range candidates {
 				if utils.CompareVersions(c, recommended) == 0 {
-					recIdx = i + 1
+					recIdx = i
 					break
 				}
 			}
-
-			idxStr := utils.PromptInput(i18n.T("prompt_upgrade_idx"), strconv.Itoa(recIdx))
-			idx, err := strconv.Atoi(idxStr)
-			if err != nil || idx < 1 || idx > len(candidates) {
-				if idx == 0 {
-					fmt.Println(i18n.T("abort"))
-				} else {
-					fmt.Println(text.FgHiRed.Sprint(i18n.T("err_invalid_id")))
-				}
-				return interaction.ErrCancelled
+			idx, err := interaction.NewPrompt(os.Stdin, os.Stderr).Menu(i18n.T("prompt_select_version"), items, recIdx)
+			if err != nil {
+				return err
 			}
-			targetVer = candidates[idx-1]
+			targetVer = candidates[idx]
 		}
 	}
 
@@ -235,6 +243,17 @@ func runUpgrade() error {
 	newBinDir := filepath.Join(baseDir, strconv.Itoa(targetVer.Major), strconv.Itoa(targetVer.Minor), "bin")
 	oldBinDir := filepath.Dir(meta.BinPath)
 	newVersionPathFull := filepath.Join(baseDir, strconv.Itoa(targetVer.Major), strconv.Itoa(targetVer.Minor))
+	if isMajor {
+		oldDataDirBackup := meta.DataDir + "_old_" + currentVer.Raw
+		if err := validateMajorUpgradeWorkspace(meta.DataDir, oldDataDirBackup, currentVer.Major); err != nil {
+			return err
+		}
+		if managedBackup {
+			if err := validatePgRmanUpgradeWorkspace(meta.Pgrman.BackupDir, currentVer.Raw); err != nil {
+				return err
+			}
+		}
+	}
 
 	u, err := user.Lookup(osUser)
 	if err != nil {
@@ -242,6 +261,14 @@ func runUpgrade() error {
 	}
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
+
+	var upgradeConnection database.Connection
+	if isMajor || managedBackup {
+		upgradeConnection, err = database.Resolve(UpgConfig.InstanceName, meta, !UI.NonInteractive)
+		if err != nil {
+			return err
+		}
+	}
 
 	mode := interaction.OutputTable
 	if UI.Output == string(interaction.OutputJSON) {
@@ -253,6 +280,42 @@ func runUpgrade() error {
 	}
 
 	serviceName := fmt.Sprintf("postgresql-%s.service", UpgConfig.InstanceName)
+	servicePath := filepath.Join(u.HomeDir, ".config", "systemd", "user", serviceName)
+	if osUser == "root" {
+		servicePath = filepath.Join("/etc/systemd/system", serviceName)
+	}
+	pgrcPath := filepath.Join(u.HomeDir, ".pgrc")
+	var serviceSnapshot, pgrcSnapshot fileSnapshot
+	if isMajor {
+		serviceSnapshot, err = captureFileSnapshot(servicePath)
+		if err != nil {
+			return err
+		}
+		pgrcSnapshot, err = captureFileSnapshot(pgrcPath)
+		if err != nil {
+			return err
+		}
+	}
+	if managedBackup && UpgConfig.SkipBackup {
+		if err := confirmUpgradeWithoutBackup(meta); err != nil {
+			return err
+		}
+	}
+
+	// A managed full backup must complete and validate while the old instance is
+	// still running. Explicitly bypassing this guard requires a second,
+	// backup-specific acknowledgement in addition to the upgrade confirmation.
+	if managedBackup && !UpgConfig.SkipBackup {
+		if err := executeStep(i18n.T("step_pre_upgrade_backup"), func() error {
+			return runManagedPreUpgradeBackup(meta, upgradeConnection)
+		}); err != nil {
+			return interaction.NewError(
+				interaction.CodeExecutionFailed,
+				i18n.T("err_pre_upgrade_backup", err),
+				interaction.ExitExecution,
+			).WithCause(err)
+		}
+	}
 
 	// Step 1: Stop Service
 	if err := executeStep(i18n.T("step_stop_service"), func() error {
@@ -266,14 +329,15 @@ func runUpgrade() error {
 
 	var oldDataDirBackup string
 	var newDataDir string
+	oldDataDir := meta.DataDir
+	oldBackupDir := ""
+	oldBackupDirArchived := ""
+	backupDirRotated := false
+	rollbackUpgrade := func(upgErr error) error { return upgErr }
 	if isMajor {
 		// Major Upgrade requires pg_upgrade
-		oldDataDir := meta.DataDir
 		oldDataDirBackup = oldDataDir + "_old_" + currentVer.Raw
 		newDataDir = oldDataDir
-
-		// Clean up any left over backup directory if it exists
-		_ = os.RemoveAll(oldDataDirBackup)
 
 		// Step 2: Backup Data
 		if err := executeStep(i18n.T("step_backup_data"), func() error {
@@ -282,44 +346,94 @@ func runUpgrade() error {
 			return err
 		}
 
-		rollback := func(upgErr error) error {
+		rollbackUpgrade = func(upgErr error) error {
 			if UI.Output != string(interaction.OutputJSON) {
 				fmt.Fprintf(os.Stderr, "\n%s: %v\n", text.FgHiRed.Sprint(i18n.T("upgrade_rollback")), upgErr)
 			}
-			_ = os.RemoveAll(newDataDir)
-			_ = os.Rename(oldDataDirBackup, oldDataDir)
-			operation.RolledBack(i18n.T("step_backup_data"))
 			if osUser == "root" {
-				_ = utils.RunCmd("systemctl", "start", serviceName)
+				_ = utils.RunCmd("systemctl", "stop", serviceName)
 			} else {
-				_ = utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
+				_ = utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user stop %s", serviceName))
 			}
-			return upgErr
+			rollbackErr := restoreMajorUpgradeArtifacts(oldDataDir, oldDataDirBackup, oldBackupDir, oldBackupDirArchived, backupDirRotated)
+			configErr := errors.Join(serviceSnapshot.Restore(), pgrcSnapshot.Restore())
+			if rollbackErr == nil {
+				backupDirRotated = false
+			}
+			if rollbackErr == nil {
+				operation.RolledBack(i18n.T("step_backup_data"))
+			}
+			var serviceErr error
+			if osUser == "root" {
+				serviceErr = utils.RunCmd("systemctl", "daemon-reload")
+				if serviceErr == nil {
+					serviceErr = utils.RunCmd("systemctl", "start", serviceName)
+				}
+			} else {
+				serviceErr = utils.RunAsUser(osUser, "systemctl --user daemon-reload")
+				if serviceErr == nil {
+					serviceErr = utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
+				}
+			}
+			if rollbackErr != nil {
+				rollbackErr = fmt.Errorf("failed to restore original data directory: %w", rollbackErr)
+			}
+			if serviceErr != nil {
+				serviceErr = fmt.Errorf("failed to restart original service: %w", serviceErr)
+			}
+			return errors.Join(upgErr, rollbackErr, configErr, serviceErr)
 		}
 
 		// Step 3: Initialize new database cluster
 		if err := executeStep(i18n.T("step_init_new_db"), func() error {
+			oldChecksumsEnabled, err := clusterDataChecksumsEnabled(osUser, oldBinDir, oldDataDirBackup)
+			if err != nil {
+				return err
+			}
+			checksumCapabilities, err := detectInitDBChecksumCapabilities(osUser, newBinDir)
+			if err != nil {
+				return err
+			}
+			checksumOption, err := initDBChecksumOption(oldChecksumsEnabled, checksumCapabilities)
+			if err != nil {
+				return err
+			}
 			if err := os.MkdirAll(newDataDir, 0755); err != nil {
 				return err
 			}
-			os.Chown(newDataDir, uid, gid)
-			pgCtl := filepath.Join(newBinDir, "pg_ctl")
-			cmd := fmt.Sprintf("export LD_LIBRARY_PATH=%s/../lib && %s -D %s initdb", newBinDir, pgCtl, newDataDir)
+			if err := os.Chown(newDataDir, uid, gid); err != nil {
+				return err
+			}
+			initDB := filepath.Join(newBinDir, "initdb")
+			libraryPath := filepath.Join(newBinDir, "..", "lib")
+			cmd := buildUpgradeInitDBCommand(libraryPath, initDB, newDataDir, upgradeConnection.User, checksumOption)
 			if err := utils.RunAsUser(osUser, cmd); err != nil {
+				return err
+			}
+			newChecksumsEnabled, err := clusterDataChecksumsEnabled(osUser, newBinDir, newDataDir)
+			if err != nil {
+				return err
+			}
+			if err := verifyChecksumStateMatch(oldChecksumsEnabled, newChecksumsEnabled); err != nil {
 				return err
 			}
 			// Reconfigure new cluster configs
 			confPath := filepath.Join(newDataDir, "postgresql.conf")
-			_ = utils.ReplaceInFile(confPath, `(?m)^#?logging_collector\s*=.*`, "logging_collector = on")
-			_ = utils.ReplaceInFile(confPath, `(?m)^#?password_encryption\s*=.*`, "password_encryption = scram-sha-256")
-			_ = utils.ReplaceInFile(confPath, `(?m)^#?listen_addresses\s*=.*`, "listen_addresses = '0.0.0.0'")
-			_ = utils.ReplaceInFile(confPath, `(?m)^#?port\s*=.*`, fmt.Sprintf("port = %s", meta.Port))
+			for _, replacement := range []struct{ pattern, value string }{
+				{`(?m)^#?logging_collector\s*=.*`, "logging_collector = on"},
+				{`(?m)^#?password_encryption\s*=.*`, "password_encryption = scram-sha-256"},
+				{`(?m)^#?listen_addresses\s*=.*`, "listen_addresses = '0.0.0.0'"},
+				{`(?m)^#?port\s*=.*`, fmt.Sprintf("port = %s", meta.Port)},
+			} {
+				if err := utils.ReplaceInFile(confPath, replacement.pattern, replacement.value); err != nil {
+					return err
+				}
+			}
 
 			hbaPath := filepath.Join(newDataDir, "pg_hba.conf")
-			_ = utils.AppendToFile(hbaPath, "\nhost    all             all             0.0.0.0/0          scram-sha-256\n")
-			return nil
+			return utils.AppendToFile(hbaPath, "\nhost    all             all             0.0.0.0/0          scram-sha-256\n")
 		}); err != nil {
-			return rollback(err)
+			return rollbackUpgrade(err)
 		}
 
 		// Stop progress writer to allow user interaction in terminal
@@ -329,40 +443,81 @@ func runUpgrade() error {
 		}
 
 		// Step 4: Run pg_upgrade
+		upgradeDiagnosticDir := filepath.Join(
+			filepath.Dir(oldDataDir),
+			fmt.Sprintf("pg_upgrade_diagnostics_%s_%s", UpgConfig.InstanceName, time.Now().Format("20060102-150405")),
+		)
 		if err := executeStep(i18n.T("step_run_pg_upgrade"), func() error {
-			pgUpgradeBin := filepath.Join(newBinDir, "pg_upgrade")
-			// Run pg_upgrade in the home directory to ensure write access to log files
-			cmd := fmt.Sprintf("cd ~ && export LD_LIBRARY_PATH=%s/../lib:%s/../lib && %s -d %s -D %s -b %s -B %s",
-				newBinDir, oldBinDir, pgUpgradeBin, oldDataDirBackup, newDataDir, oldBinDir, newBinDir)
-			if err := utils.RunAsUser(osUser, cmd); err != nil {
+			if err := os.MkdirAll(upgradeDiagnosticDir, 0755); err != nil {
 				return err
 			}
-			return nil
+			if err := os.Chown(upgradeDiagnosticDir, uid, gid); err != nil {
+				return err
+			}
+			pgUpgradeBin := filepath.Join(newBinDir, "pg_upgrade")
+			libraryPath := filepath.Join(newBinDir, "..", "lib") + ":" + filepath.Join(oldBinDir, "..", "lib")
+			cmd := buildPgUpgradeCommand(
+				upgradeDiagnosticDir,
+				libraryPath,
+				pgUpgradeBin,
+				oldDataDirBackup,
+				newDataDir,
+				oldBinDir,
+				newBinDir,
+				upgradeConnection.User,
+			)
+			if err := runPgUpgradeCommand(osUser, cmd, upgradeDiagnosticDir); err != nil {
+				return err
+			}
+			return os.RemoveAll(upgradeDiagnosticDir)
 		}); err != nil {
-			return rollback(err)
+			operation.Retain(upgradeDiagnosticDir)
+			operation.RecoverWith(i18n.T("upgrade_diagnostics_recovery", upgradeDiagnosticDir))
+			return rollbackUpgrade(err)
 		}
 
 		// Re-initialize pg_rman backup catalog for upgraded database if configured
 		if meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman" && meta.Pgrman.BackupDir != "" {
-			if err := executeStep(i18n.T("step_reinit_pgrman"), func() error {
-				oldBackupDir := meta.Pgrman.BackupDir
+			if err := executeStep(i18n.T("step_reinit_pgrman"), func() (stepErr error) {
+				oldBackupDir = filepath.Clean(meta.Pgrman.BackupDir)
+				archiveLogPath := pgrmanArchiveLogPath(meta)
+				defer func() {
+					if stepErr != nil && backupDirRotated {
+						if restoreErr := restorePgRmanBackupDirectory(oldBackupDir, oldBackupDirArchived); restoreErr != nil {
+							stepErr = errors.Join(stepErr, fmt.Errorf("failed to restore original pg_rman backup directory: %w", restoreErr))
+						} else {
+							backupDirRotated = false
+						}
+					}
+				}()
 				if oldBackupDir != "" {
 					if _, err := os.Stat(oldBackupDir); err == nil {
-						oldBackupDirArchived := oldBackupDir + "_old_" + currentVer.Raw
-						_ = os.RemoveAll(oldBackupDirArchived)
+						oldBackupDirArchived = archivedBackupDirectory(oldBackupDir, currentVer.Raw)
+						if _, err := os.Stat(oldBackupDirArchived); err == nil {
+							return fmt.Errorf("pg_rman recovery directory already exists: %s", oldBackupDirArchived)
+						} else if !os.IsNotExist(err) {
+							return err
+						}
 						if err := os.Rename(oldBackupDir, oldBackupDirArchived); err != nil {
 							return fmt.Errorf("failed to rename old pg_rman backup directory: %w", err)
 						}
+						backupDirRotated = true
 					}
 
 					if err := os.MkdirAll(oldBackupDir, 0755); err != nil {
 						return fmt.Errorf("failed to create new pg_rman backup directory: %w", err)
 					}
-					_ = os.Chown(oldBackupDir, uid, gid)
+					if err := os.Chown(oldBackupDir, uid, gid); err != nil {
+						return err
+					}
 
-					if meta.Pgrman.ArcLogPath != "" {
-						_ = os.MkdirAll(meta.Pgrman.ArcLogPath, 0755)
-						_ = os.Chown(meta.Pgrman.ArcLogPath, uid, gid)
+					if archiveLogPath != "" {
+						if err := os.MkdirAll(archiveLogPath, 0755); err != nil {
+							return err
+						}
+						if err := os.Chown(archiveLogPath, uid, gid); err != nil {
+							return err
+						}
 					}
 
 					pgrmanBin := filepath.Join(newBinDir, "pg_rman")
@@ -374,44 +529,35 @@ func runUpgrade() error {
 					upgMeta.DataDir = newDataDir
 					upgMeta.BinPath = filepath.Join(newBinDir, "postgres")
 
-					initCmdStr := fmt.Sprintf("%s init -B %s -D %s", pgrmanBin, oldBackupDir, newDataDir)
-					execCmdStr := utils.BuildInstanceCmd(upgMeta, initCmdStr)
-					execCmd := exec.Command("su", "-s", "/bin/bash", "-", osUser, "-c", execCmdStr)
-					out, err := execCmd.CombinedOutput()
-					if err != nil {
-						outStr := string(out)
-						if !strings.Contains(strings.ToLower(outStr), "already initialized") {
-							return fmt.Errorf("pg_rman init failed: %s", outStr)
-						}
+					if err := runPgRmanInit(osUser, upgMeta, pgrmanBin, oldBackupDir); err != nil {
+						return err
 					}
 
 					iniPath := filepath.Join(oldBackupDir, "pg_rman.ini")
 					iniContent := fmt.Sprintf("SRVLOG_PATH='%s'\nARCLOG_PATH='%s'\nCOMPRESS_DATA=%s\nKEEP_ARCLOG_DAYS=%d\nKEEP_SRVLOG_DAYS=%d\nKEEP_DATA_DAYS=%d\n",
-						meta.Pgrman.SrvLogPath, meta.Pgrman.ArcLogPath, meta.Pgrman.CompressData,
+						meta.Pgrman.SrvLogPath, archiveLogPath, meta.Pgrman.CompressData,
 						meta.Pgrman.KeepArcLogDays, meta.Pgrman.KeepSrvLogDays, meta.Pgrman.KeepDataDays)
 
 					if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 						return fmt.Errorf("failed to write pg_rman.ini: %w", err)
 					}
-					_ = os.Chown(iniPath, uid, gid)
+					if err := os.Chown(iniPath, uid, gid); err != nil {
+						return err
+					}
 				}
 				return nil
 			}); err != nil {
-				return rollback(err)
+				return rollbackUpgrade(err)
 			}
 		}
 	}
 
 	// Step 5: Update systemd service file
 	if err := executeStep(i18n.T("step_update_systemd"), func() error {
-		var svcPath string
 		var wantedBy string
 		if osUser == "root" {
-			svcPath = filepath.Join("/etc/systemd/system", serviceName)
 			wantedBy = "multi-user.target"
 		} else {
-			sysdDir := filepath.Join(u.HomeDir, ".config", "systemd", "user")
-			svcPath = filepath.Join(sysdDir, serviceName)
 			wantedBy = "default.target"
 		}
 
@@ -434,18 +580,25 @@ Restart=on-failure
 WantedBy=%s
 `, UpgConfig.InstanceName, newBinPath, meta.DataDir, wantedBy)
 
-		if err := os.WriteFile(svcPath, []byte(svcContent), 0644); err != nil {
+		if err := os.WriteFile(servicePath, []byte(svcContent), 0644); err != nil {
 			return err
 		}
-		return os.Chown(svcPath, uid, gid)
+		return os.Chown(servicePath, uid, gid)
 	}); err != nil {
-		return err
+		return rollbackUpgrade(err)
 	}
 
 	// Step 6: Update user environment (.pgrc)
 	if err := executeStep(i18n.T("step_update_env"), func() error {
-		pgrcPath := filepath.Join(u.HomeDir, ".pgrc")
 		backupDir := filepath.Join(baseDir, fmt.Sprintf("backup_%s", UpgConfig.InstanceName))
+		databaseUser := meta.DatabaseUser
+		if databaseUser == "" {
+			databaseUser = "postgres"
+		}
+		databaseName := meta.DatabaseName
+		if databaseName == "" {
+			databaseName = "postgres"
+		}
 		if meta.Pgrman != nil && meta.Pgrman.BackupDir != "" {
 			backupDir = meta.Pgrman.BackupDir
 		}
@@ -457,14 +610,19 @@ WantedBy=%s
 			"PGDATA":            fmt.Sprintf("'%s'", meta.DataDir),
 			"LD_LIBRARY_PATH":   fmt.Sprintf("':%s/lib/'", newVersionPathFull),
 			"PGPORT":            fmt.Sprintf("'%s'", meta.Port),
+			"PGUSER":            fmt.Sprintf("'%s'", databaseUser),
+			"PGDATABASE":        fmt.Sprintf("'%s'", databaseName),
 		}
 
 		if err := utils.UpdatePgrc(pgrcPath, envs); err != nil {
 			return err
 		}
+		if err := ensurePgMgrUseShellIntegration(pgrcPath); err != nil {
+			return err
+		}
 		return os.Chown(pgrcPath, uid, gid)
 	}); err != nil {
-		return err
+		return rollbackUpgrade(err)
 	}
 
 	// Step 7: Start service
@@ -483,14 +641,14 @@ WantedBy=%s
 		}
 		return nil
 	}); err != nil {
-		return err
+		return rollbackUpgrade(err)
 	}
 
 	// Step 8: Update registry
 	if err := executeStep(i18n.T("step_update_registry"), func() error {
 		return config.SaveInstanceToRegistry(UpgConfig.InstanceName, osUser, meta.DataDir, newBinPath, meta.Port)
 	}); err != nil {
-		return err
+		return rollbackUpgrade(err)
 	}
 
 	if UI.Output == string(interaction.OutputJSON) {
@@ -499,6 +657,315 @@ WantedBy=%s
 	if !UI.Quiet {
 		fmt.Printf("\n%s\n", text.FgHiGreen.Sprint(i18n.T("upgrade_success", UpgConfig.InstanceName, targetVer.Raw)))
 		fmt.Println(text.FgHiYellow.Sprint(i18n.T("upgrade_collation_notice")))
+	}
+	return nil
+}
+
+func runPgUpgradeCommand(osUser, cmd, diagnosticDir string) error {
+	if err := utils.RunAsUser(osUser, cmd); err != nil {
+		return interaction.NewError(
+			interaction.CodeExecutionFailed,
+			i18n.T("err_pg_upgrade_failed", err, diagnosticDir),
+			interaction.ExitExecution,
+		).WithCause(err).WithDetail("diagnostic_directory", diagnosticDir)
+	}
+	return nil
+}
+
+func buildPgUpgradeCommand(diagnosticDir, libraryPath, pgUpgradeBin, oldDataDir, newDataDir, oldBinDir, newBinDir, databaseUser string) string {
+	return fmt.Sprintf("cd %s && export LD_LIBRARY_PATH=%s && %s -d %s -D %s -b %s -B %s -U %s",
+		shellQuote(diagnosticDir),
+		shellQuote(libraryPath),
+		shellQuote(pgUpgradeBin),
+		shellQuote(oldDataDir),
+		shellQuote(newDataDir),
+		shellQuote(oldBinDir),
+		shellQuote(newBinDir),
+		shellQuote(databaseUser))
+}
+
+func buildUpgradeInitDBCommand(libraryPath, initDB, dataDir, databaseUser, checksumOption string) string {
+	command := fmt.Sprintf("export LD_LIBRARY_PATH=%s && %s -D %s -U %s",
+		shellQuote(libraryPath), shellQuote(initDB), shellQuote(dataDir), shellQuote(databaseUser))
+	if checksumOption != "" {
+		command += " " + checksumOption
+	}
+	return command
+}
+
+func archivedBackupDirectory(backupDir, version string) string {
+	return filepath.Clean(backupDir) + "_old_" + version
+}
+
+func validateMajorUpgradeWorkspace(dataDir, recoveryDir string, expectedMajor int) error {
+	if _, err := os.Stat(recoveryDir); err == nil {
+		return interaction.NewError(
+			interaction.CodeResourceConflict,
+			i18n.T("err_upgrade_recovery_dir_exists", recoveryDir),
+			interaction.ExitTarget,
+		)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	content, err := os.ReadFile(filepath.Join(dataDir, "PG_VERSION"))
+	if err != nil {
+		return fmt.Errorf("failed to read source cluster PG_VERSION: %w", err)
+	}
+	majorText := strings.Split(strings.TrimSpace(string(content)), ".")[0]
+	major, err := strconv.Atoi(majorText)
+	if err != nil || major != expectedMajor {
+		return interaction.NewError(
+			interaction.CodeResourceConflict,
+			i18n.T("err_upgrade_data_version_mismatch", expectedMajor, dataDir, strings.TrimSpace(string(content))),
+			interaction.ExitTarget,
+		)
+	}
+	return nil
+}
+
+func validatePgRmanUpgradeWorkspace(backupDir, version string) error {
+	archivedDir := archivedBackupDirectory(backupDir, version)
+	if _, err := os.Stat(archivedDir); err == nil {
+		return interaction.NewError(
+			interaction.CodeResourceConflict,
+			i18n.T("err_upgrade_pgrman_recovery_dir_exists", archivedDir, filepath.Clean(backupDir)),
+			interaction.ExitTarget,
+		)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func restoreMajorUpgradeDataDirectory(dataDir, recoveryDir string) error {
+	if _, err := os.Stat(recoveryDir); err != nil {
+		return fmt.Errorf("recovery directory %s is unavailable: %w", recoveryDir, err)
+	}
+	if err := os.RemoveAll(dataDir); err != nil {
+		return err
+	}
+	return os.Rename(recoveryDir, dataDir)
+}
+
+func restorePgRmanBackupDirectory(backupDir, archivedDir string) error {
+	if archivedDir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(backupDir); err != nil {
+		return err
+	}
+	return os.Rename(archivedDir, backupDir)
+}
+
+func restoreMajorUpgradeArtifacts(dataDir, oldDataDir, backupDir, oldBackupDir string, backupRotated bool) error {
+	var backupErr error
+	if backupRotated {
+		backupErr = restorePgRmanBackupDirectory(backupDir, oldBackupDir)
+	}
+	dataErr := restoreMajorUpgradeDataDirectory(dataDir, oldDataDir)
+	return errors.Join(backupErr, dataErr)
+}
+
+type fileSnapshot struct {
+	path    string
+	content []byte
+	mode    os.FileMode
+	existed bool
+}
+
+func captureFileSnapshot(path string) (fileSnapshot, error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return fileSnapshot{path: path}, nil
+	}
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fileSnapshot{}, err
+	}
+	return fileSnapshot{path: path, content: content, mode: info.Mode().Perm(), existed: true}, nil
+}
+
+func (snapshot fileSnapshot) Restore() error {
+	if snapshot.path == "" {
+		return nil
+	}
+	if !snapshot.existed {
+		if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return os.WriteFile(snapshot.path, snapshot.content, snapshot.mode)
+}
+
+var runUpgradeCommandAsUser = utils.RunAsUserWithCombinedOutput
+
+func runPgRmanInit(osUser string, meta config.InstanceMeta, pgrmanBin, backupDir string) error {
+	initCommand := fmt.Sprintf("%s init -B %s -D %s",
+		shellQuote(pgrmanBin), shellQuote(backupDir), shellQuote(meta.DataDir))
+	command := utils.BuildInstanceCmd(meta, initCommand)
+	output, err := runUpgradeCommandAsUser(osUser, command)
+	if err != nil && !strings.Contains(strings.ToLower(output), "already initialized") {
+		return fmt.Errorf("pg_rman init failed: %s", strings.TrimSpace(output))
+	}
+	return nil
+}
+
+func clusterDataChecksumsEnabled(osUser, oldBinDir, dataDir string) (bool, error) {
+	pgControlData := filepath.Join(oldBinDir, "pg_controldata")
+	cmd := fmt.Sprintf("LC_ALL=C %s %s", shellQuote(pgControlData), shellQuote(dataDir))
+	output, err := utils.RunAsUserWithCombinedOutput(osUser, cmd)
+	if err != nil {
+		return false, interaction.NewError(
+			interaction.CodeExecutionFailed,
+			i18n.T("err_checksum_detection", err, strings.TrimSpace(output)),
+			interaction.ExitExecution,
+		).WithCause(err)
+	}
+	return parseDataChecksumState(output)
+}
+
+func parseDataChecksumState(output string) (bool, error) {
+	const label = "Data page checksum version:"
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, label) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, label))
+		version, err := strconv.Atoi(value)
+		if err != nil {
+			return false, interaction.NewError(
+				interaction.CodeExecutionFailed,
+				i18n.T("err_checksum_value", value),
+				interaction.ExitExecution,
+			).WithCause(err)
+		}
+		return version > 0, nil
+	}
+	return false, interaction.NewError(
+		interaction.CodeExecutionFailed,
+		i18n.T("err_checksum_missing"),
+		interaction.ExitExecution,
+	)
+}
+
+type initDBChecksumCapabilities struct {
+	Enable  bool
+	Disable bool
+}
+
+func detectInitDBChecksumCapabilities(osUser, binDir string) (initDBChecksumCapabilities, error) {
+	initDB := filepath.Join(binDir, "initdb")
+	libraryPath := filepath.Join(binDir, "..", "lib")
+	cmd := fmt.Sprintf("LC_ALL=C LD_LIBRARY_PATH=%s %s --help", shellQuote(libraryPath), shellQuote(initDB))
+	output, err := utils.RunAsUserWithCombinedOutput(osUser, cmd)
+	if err != nil {
+		return initDBChecksumCapabilities{}, interaction.NewError(
+			interaction.CodeExecutionFailed,
+			i18n.T("err_initdb_capabilities", err, strings.TrimSpace(output)),
+			interaction.ExitExecution,
+		).WithCause(err)
+	}
+	return parseInitDBChecksumCapabilities(output), nil
+}
+
+func parseInitDBChecksumCapabilities(help string) initDBChecksumCapabilities {
+	capabilities := initDBChecksumCapabilities{}
+	for _, field := range strings.Fields(help) {
+		switch strings.TrimSpace(field) {
+		case "--data-checksums":
+			capabilities.Enable = true
+		case "--no-data-checksums":
+			capabilities.Disable = true
+		}
+	}
+	return capabilities
+}
+
+func initDBChecksumOption(oldChecksumsEnabled bool, capabilities initDBChecksumCapabilities) (string, error) {
+	if oldChecksumsEnabled {
+		if !capabilities.Enable {
+			return "", interaction.NewError(
+				interaction.CodeExecutionFailed,
+				i18n.T("err_initdb_enable_checksums_unsupported"),
+				interaction.ExitExecution,
+			)
+		}
+		return "--data-checksums", nil
+	}
+	if capabilities.Disable {
+		return "--no-data-checksums", nil
+	}
+	// Older initdb versions defaulted to disabled checksums and had no explicit
+	// disable flag. The post-init pg_controldata check below validates the actual
+	// state instead of trusting that historical behavior.
+	return "", nil
+}
+
+func verifyChecksumStateMatch(oldEnabled, newEnabled bool) error {
+	if oldEnabled == newEnabled {
+		return nil
+	}
+	return interaction.NewError(
+		interaction.CodeResourceConflict,
+		i18n.T("err_checksum_state_mismatch", checksumState(oldEnabled), checksumState(newEnabled)),
+		interaction.ExitTarget,
+	)
+}
+
+func checksumState(enabled bool) string {
+	if enabled {
+		return i18n.T("checksum_enabled")
+	}
+	return i18n.T("checksum_disabled")
+}
+
+func hasManagedUpgradeBackup(meta config.InstanceMeta) bool {
+	return meta.Pgrman != nil && meta.Pgrman.Tool == "pgrman" && strings.TrimSpace(meta.Pgrman.BackupDir) != ""
+}
+
+func confirmUpgradeWithoutBackup(meta config.InstanceMeta) error {
+	if UI.NonInteractive {
+		if !UpgConfig.AcceptNoBackupRisk {
+			return interaction.MissingFlags("--accept-no-backup-risk")
+		}
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("warn_skip_upgrade_backup")))
+	fmt.Fprintln(os.Stderr, i18n.T("skip_backup_instance", UpgConfig.InstanceName))
+	fmt.Fprintln(os.Stderr, i18n.T("skip_backup_catalog", meta.Pgrman.BackupDir))
+	fmt.Fprintln(os.Stderr, i18n.T("skip_backup_risk"))
+	choice, err := interaction.NewPrompt(os.Stdin, os.Stderr).Menu(
+		i18n.T("confirm_skip_upgrade_backup"),
+		[]string{i18n.T("option_yes"), i18n.T("option_no")},
+		1,
+	)
+	if err != nil {
+		return err
+	}
+	if choice != 0 {
+		return interaction.ErrCancelled
+	}
+	return nil
+}
+
+func runManagedPreUpgradeBackup(meta config.InstanceMeta, connection database.Connection) error {
+	if pgrmanArchiveLogPath(meta) == "" {
+		return interaction.NewError(interaction.CodeInvalidInput, i18n.T("err_pgrman_archive_path_missing"), interaction.ExitTarget)
+	}
+	command := buildPgRmanBackupCommand(meta, "full", connection)
+	execCommand := utils.BuildInstanceCmd(meta, command)
+	writer := io.Writer(io.Discard)
+	if UI.Output != string(interaction.OutputJSON) {
+		writer = os.Stderr
+	}
+	output, err := utils.RunAsUserWithLiveOutput(meta.User, execCommand, writer)
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(output))
 	}
 	return nil
 }

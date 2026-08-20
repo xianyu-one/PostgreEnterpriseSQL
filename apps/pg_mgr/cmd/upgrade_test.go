@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"pg_mgr/internal/config"
 	"pg_mgr/internal/utils"
 )
 
@@ -308,5 +311,348 @@ func TestPgrmanUpgradeRename(t *testing.T) {
 	entries, err := os.ReadDir(oldBackupDir)
 	if err != nil || len(entries) != 0 {
 		t.Errorf("expected new backup dir to be empty, got %d entries", len(entries))
+	}
+}
+
+func TestRunPgUpgradeCommandReportsOutputAndDiagnosticDirectory(t *testing.T) {
+	currentUser, err := utils.GetCurrentOSUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnosticDir := filepath.Join(t.TempDir(), "pg_upgrade_output")
+	err = runPgUpgradeCommand(currentUser, "printf 'incompatible extension'; exit 1", diagnosticDir)
+	if err == nil {
+		t.Fatal("expected pg_upgrade command to fail")
+	}
+	for _, want := range []string{"incompatible extension", diagnosticDir} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestBuildPgUpgradeCommandUsesConfiguredDatabaseRole(t *testing.T) {
+	command := buildPgUpgradeCommand(
+		"/tmp/diagnostics",
+		"/new/lib:/old/lib",
+		"/new/bin/pg_upgrade",
+		"/data/old",
+		"/data/new",
+		"/old/bin",
+		"/new/bin",
+		"postgres",
+	)
+	if !strings.Contains(command, "-U 'postgres'") {
+		t.Fatalf("command does not contain configured database role: %s", command)
+	}
+}
+
+func TestBuildUpgradeInitDBCommandUsesSameConfiguredDatabaseRole(t *testing.T) {
+	command := buildUpgradeInitDBCommand("/new/lib", "/new/bin/initdb", "/data/new", "postgres", "--no-data-checksums")
+	for _, want := range []string{"-U 'postgres'", "--no-data-checksums"} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("command does not contain %q: %s", want, command)
+		}
+	}
+}
+
+func TestArchivedBackupDirectoryIsSiblingWhenConfiguredPathHasTrailingSlash(t *testing.T) {
+	got := archivedBackupDirectory("/srv/postgres/backup/", "17.11")
+	want := "/srv/postgres/backup_old_17.11"
+	if got != want {
+		t.Fatalf("archivedBackupDirectory() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateMajorUpgradeWorkspaceRejectsExistingRecoveryDirectory(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	recoveryDir := dataDir + "_old_17.11"
+	if err := os.MkdirAll(recoveryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMajorUpgradeWorkspace(dataDir, recoveryDir, 17); err == nil {
+		t.Fatal("expected existing recovery directory to block upgrade")
+	}
+}
+
+func TestValidatePgRmanUpgradeWorkspaceRejectsExistingArchivedCatalog(t *testing.T) {
+	backupDir := filepath.Join(t.TempDir(), "backup")
+	archivedDir := archivedBackupDirectory(backupDir, "17.11")
+	if err := os.MkdirAll(archivedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePgRmanUpgradeWorkspace(backupDir, "17.11"); err == nil {
+		t.Fatal("expected existing archived pg_rman catalog to block upgrade")
+	}
+}
+
+func TestValidateMajorUpgradeWorkspaceRejectsMismatchedDataVersion(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "PG_VERSION"), []byte("18\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateMajorUpgradeWorkspace(dataDir, dataDir+"_old_17.11", 17); err == nil {
+		t.Fatal("expected mismatched data major version to block upgrade")
+	}
+}
+
+func TestRestoreMajorUpgradeDataDirectoryReplacesNewCluster(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	recoveryDir := filepath.Join(root, "data_old_17.11")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(recoveryDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "PG_VERSION"), []byte("18"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(recoveryDir, "PG_VERSION"), []byte("17"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreMajorUpgradeDataDirectory(dataDir, recoveryDir); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dataDir, "PG_VERSION"))
+	if err != nil || string(content) != "17" {
+		t.Fatalf("restored PG_VERSION = %q, error = %v", content, err)
+	}
+	if _, err := os.Stat(recoveryDir); !os.IsNotExist(err) {
+		t.Fatalf("recovery directory still exists: %v", err)
+	}
+}
+
+func TestRestorePgRmanBackupDirectoryReplacesPartialCatalog(t *testing.T) {
+	root := t.TempDir()
+	backupDir := filepath.Join(root, "backup")
+	archivedDir := filepath.Join(root, "backup_old_17.11")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(archivedDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(archivedDir, "backup.ini"), []byte("original"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorePgRmanBackupDirectory(backupDir, archivedDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, "backup.ini")); err != nil {
+		t.Fatalf("original catalog was not restored: %v", err)
+	}
+}
+
+func TestRestoreMajorUpgradeArtifactsRestoresDataAndBackupCatalog(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	oldDataDir := filepath.Join(root, "data_old_17.11")
+	backupDir := filepath.Join(root, "backup")
+	oldBackupDir := filepath.Join(root, "backup_old_17.11")
+	for _, dir := range []string{dataDir, oldDataDir, backupDir, oldBackupDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(oldDataDir, "PG_VERSION"), []byte("17"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldBackupDir, "pg_rman.ini"), []byte("SRVLOG_PATH='/old/log'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreMajorUpgradeArtifacts(dataDir, oldDataDir, backupDir, oldBackupDir, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(dataDir, "PG_VERSION"), filepath.Join(backupDir, "pg_rman.ini")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected restored artifact %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{oldDataDir, oldBackupDir} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("recovery directory still blocks retry: %s (%v)", path, err)
+		}
+	}
+}
+
+func TestFileSnapshotRestoresExistingFileAndRemovesCreatedFile(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "existing")
+	created := filepath.Join(root, "created")
+	if err := os.WriteFile(existing, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	existingSnapshot, err := captureFileSnapshot(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdSnapshot, err := captureFileSnapshot(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(existing, []byte("new"), 0644)
+	_ = os.WriteFile(created, []byte("new"), 0644)
+	if err := errors.Join(existingSnapshot.Restore(), createdSnapshot.Restore()); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(existing)
+	if string(content) != "old" {
+		t.Fatalf("restored content = %q", content)
+	}
+	if _, err := os.Stat(created); !os.IsNotExist(err) {
+		t.Fatalf("created file still exists after rollback: %v", err)
+	}
+}
+
+func TestUpgradeRequiresRootBeforePromptingOrChangingState(t *testing.T) {
+	original := upgradeEnsureRoot
+	t.Cleanup(func() { upgradeEnsureRoot = original })
+	want := errors.New("root required")
+	upgradeEnsureRoot = func() error { return want }
+	if err := runUpgrade(); !errors.Is(err, want) {
+		t.Fatalf("runUpgrade() error = %v, want %v", err, want)
+	}
+}
+
+func TestRunPgRmanInitUsesUserAwareCommandRunner(t *testing.T) {
+	original := runUpgradeCommandAsUser
+	t.Cleanup(func() { runUpgradeCommandAsUser = original })
+
+	called := false
+	runUpgradeCommandAsUser = func(username, command string) (string, error) {
+		called = true
+		if username != "xianyu" {
+			t.Fatalf("username = %q, want xianyu", username)
+		}
+		for _, want := range []string{"'/new/bin/pg_rman'", "-B '/backup/catalog'", "-D '/data/new'"} {
+			if !strings.Contains(command, want) {
+				t.Fatalf("command does not contain %q: %s", want, command)
+			}
+		}
+		return "", nil
+	}
+
+	meta := config.InstanceMeta{DataDir: "/data/new", BinPath: "/new/bin/postgres"}
+	if err := runPgRmanInit("xianyu", meta, "/new/bin/pg_rman", "/backup/catalog"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("user-aware command runner was not called")
+	}
+}
+
+func TestParseDataChecksumState(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		enabled bool
+	}{
+		{name: "disabled", output: "Data page checksum version:           0\n", enabled: false},
+		{name: "enabled", output: "Data page checksum version:           1\n", enabled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enabled, err := parseDataChecksumState(tt.output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if enabled != tt.enabled {
+				t.Fatalf("enabled = %v, want %v", enabled, tt.enabled)
+			}
+		})
+	}
+}
+
+func TestParseInitDBChecksumCapabilities(t *testing.T) {
+	capabilities := parseInitDBChecksumCapabilities("  -k, --data-checksums use checksums\n      --no-data-checksums disable checksums\n")
+	if !capabilities.Enable || !capabilities.Disable {
+		t.Fatalf("capabilities = %+v, want enable and disable", capabilities)
+	}
+
+	capabilities = parseInitDBChecksumCapabilities("  -k, --data-checksums use checksums\n")
+	if !capabilities.Enable || capabilities.Disable {
+		t.Fatalf("capabilities = %+v, want enable only", capabilities)
+	}
+}
+
+func TestInitDBChecksumOptionMatchesOldClusterCapabilities(t *testing.T) {
+	tests := []struct {
+		name         string
+		enabled      bool
+		capabilities initDBChecksumCapabilities
+		want         string
+		wantErr      bool
+	}{
+		{name: "enabled low-version cluster remains enabled", enabled: true, capabilities: initDBChecksumCapabilities{Enable: true}, want: "--data-checksums"},
+		{name: "disabled uses explicit target capability", enabled: false, capabilities: initDBChecksumCapabilities{Enable: true, Disable: true}, want: "--no-data-checksums"},
+		{name: "disabled target without disable capability is verified after init", enabled: false, capabilities: initDBChecksumCapabilities{Enable: true}, want: ""},
+		{name: "enabled target without enable capability fails", enabled: true, capabilities: initDBChecksumCapabilities{}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := initDBChecksumOption(tt.enabled, tt.capabilities)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("option = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyChecksumStateMatch(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		if err := verifyChecksumStateMatch(enabled, enabled); err != nil {
+			t.Fatalf("matching state %v failed: %v", enabled, err)
+		}
+	}
+	if err := verifyChecksumStateMatch(false, true); err == nil {
+		t.Fatal("expected mismatched checksum state to fail")
+	}
+}
+
+func TestHasManagedUpgradeBackup(t *testing.T) {
+	tests := []struct {
+		name string
+		meta config.InstanceMeta
+		want bool
+	}{
+		{name: "configured", meta: config.InstanceMeta{Pgrman: &config.PgrmanConfig{Tool: "pgrman", BackupDir: "/backup"}}, want: true},
+		{name: "missing directory", meta: config.InstanceMeta{Pgrman: &config.PgrmanConfig{Tool: "pgrman"}}},
+		{name: "different tool", meta: config.InstanceMeta{Pgrman: &config.PgrmanConfig{Tool: "other", BackupDir: "/backup"}}},
+		{name: "not configured", meta: config.InstanceMeta{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasManagedUpgradeBackup(tt.meta); got != tt.want {
+				t.Fatalf("hasManagedUpgradeBackup() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNonInteractiveBackupBypassRequiresRiskAcknowledgement(t *testing.T) {
+	previousUI := UI
+	previousUpgrade := UpgConfig
+	t.Cleanup(func() {
+		UI = previousUI
+		UpgConfig = previousUpgrade
+	})
+
+	UI.NonInteractive = true
+	UpgConfig.InstanceName = "sales"
+	meta := config.InstanceMeta{Pgrman: &config.PgrmanConfig{Tool: "pgrman", BackupDir: "/backup"}}
+	if err := confirmUpgradeWithoutBackup(meta); err == nil || !strings.Contains(err.Error(), "--accept-no-backup-risk") {
+		t.Fatalf("error = %v, want missing risk acknowledgement", err)
+	}
+	UpgConfig.AcceptNoBackupRisk = true
+	if err := confirmUpgradeWithoutBackup(meta); err != nil {
+		t.Fatalf("confirmed bypass failed: %v", err)
 	}
 }

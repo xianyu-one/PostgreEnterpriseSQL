@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -58,6 +59,17 @@ func runUse(instanceName string) error {
 
 	versionPathFull := filepath.Dir(filepath.Dir(meta.BinPath))
 	backupDir := filepath.Join(config.Global.BaseDir, fmt.Sprintf("backup_%s", instanceName))
+	if meta.Pgrman != nil && strings.TrimSpace(meta.Pgrman.BackupDir) != "" {
+		backupDir = filepath.Clean(meta.Pgrman.BackupDir)
+	}
+	databaseUser := meta.DatabaseUser
+	if databaseUser == "" {
+		databaseUser = "postgres"
+	}
+	databaseName := meta.DatabaseName
+	if databaseName == "" {
+		databaseName = "postgres"
+	}
 
 	// Write to .pgrc of the instance's OS user
 	u, err := user.Lookup(meta.User)
@@ -72,9 +84,13 @@ func runUse(instanceName string) error {
 			"PGDATA":            fmt.Sprintf("'%s'", meta.DataDir),
 			"LD_LIBRARY_PATH":   fmt.Sprintf("':%s/lib/'", versionPathFull),
 			"PGPORT":            fmt.Sprintf("'%s'", meta.Port),
+			"PGUSER":            fmt.Sprintf("'%s'", databaseUser),
+			"PGDATABASE":        fmt.Sprintf("'%s'", databaseName),
 		}
 
 		if err := utils.UpdatePgrc(pgrcPath, envs); err != nil {
+			fmt.Fprintln(os.Stderr, i18n.T("warn_profile_update", pgrcPath, err))
+		} else if err := ensurePgMgrUseShellIntegration(pgrcPath); err != nil {
 			fmt.Fprintln(os.Stderr, i18n.T("warn_profile_update", pgrcPath, err))
 		} else {
 			uid, _ := strconv.Atoi(u.Uid)
@@ -91,6 +107,31 @@ func runUse(instanceName string) error {
 	fmt.Printf("export PGDATA='%s'\n", meta.DataDir)
 	fmt.Printf("export LD_LIBRARY_PATH=':%s/lib/'\n", versionPathFull)
 	fmt.Printf("export PGPORT='%s'\n", meta.Port)
+	fmt.Printf("export PGUSER='%s'\n", databaseUser)
+	fmt.Printf("export PGDATABASE='%s'\n", databaseName)
 	fmt.Fprintln(os.Stderr, i18n.T("use_guidance"))
 	return nil
+}
+
+func ensurePgMgrUseShellIntegration(pgrcPath string) error {
+	const marker = "PG_MGR_USE_SHELL_INTEGRATION_START"
+	content, err := os.ReadFile(pgrcPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if strings.Contains(string(content), marker) {
+		return nil
+	}
+	const integration = `
+# PG_MGR_USE_SHELL_INTEGRATION_START
+pg_mgr() {
+    if [ "$1" = "use" ] || { [ "$1" = "instance" ] && [ "$2" = "use" ]; }; then
+        eval "$(command pg_mgr "$@")"
+    else
+        command pg_mgr "$@"
+    fi
+}
+# PG_MGR_USE_SHELL_INTEGRATION_END
+`
+	return utils.AppendToFile(pgrcPath, integration)
 }

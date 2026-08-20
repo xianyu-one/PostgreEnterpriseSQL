@@ -239,9 +239,14 @@ func runCreateInstance(instanceExplicit bool) error {
 			"PGDATA":            fmt.Sprintf("'%s'", dataDir),
 			"LD_LIBRARY_PATH":   fmt.Sprintf("':%s/lib/'", versionPathFull),
 			"PGPORT":            fmt.Sprintf("'%d'", Config.Port),
+			"PGUSER":            fmt.Sprintf("'%s'", Config.DBUser),
+			"PGDATABASE":        "'postgres'",
 		}
 
 		if err := utils.UpdatePgrc(pgrcPath, envs); err != nil {
+			return err
+		}
+		if err := ensurePgMgrUseShellIntegration(pgrcPath); err != nil {
 			return err
 		}
 		if Config.SystemctlAlias {

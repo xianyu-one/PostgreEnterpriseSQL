@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -84,7 +85,7 @@ var backupListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   i18n.T("backup_list_desc"),
-	RunE:    func(cmd *cobra.Command, args []string) error { runBackupList(); return nil },
+	RunE:    func(cmd *cobra.Command, args []string) error { return runBackupList() },
 }
 
 var pgrmanRunCmd = &cobra.Command{
@@ -516,6 +517,10 @@ func runPgrmanRun(cmd *cobra.Command) error {
 	if meta.Pgrman == nil || meta.Pgrman.Tool != "pgrman" {
 		return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_no_backup_config", instName), interaction.ExitTarget)
 	}
+	meta, err := recoverAndPersistPgrmanConfig(instName, meta)
+	if err != nil {
+		return err
+	}
 	if err := ensureInstancePermission(instName); err != nil {
 		return err
 	}
@@ -582,16 +587,91 @@ func runPgrmanRun(cmd *cobra.Command) error {
 
 func buildPgRmanBackupCommand(meta config.InstanceMeta, mode string, connection database.Connection) string {
 	pgrmanBin := getPgrmanBin(meta)
-	return fmt.Sprintf("%s backup -p %s -U %s -d %s -D %s --backup-mode=%s --with-serverlog -B %s && %s validate -B %s",
+	archiveLogPath := pgrmanArchiveLogPath(meta)
+	serverLogPath := pgrmanServerLogPath(meta)
+	return fmt.Sprintf("%s backup -p %s -U %s -d %s -D %s -A %s -S %s --backup-mode=%s --with-serverlog -B %s && %s validate -B %s",
 		shellQuote(pgrmanBin),
 		shellQuote(meta.Port),
 		shellQuote(connection.User),
 		shellQuote(connection.Database),
 		shellQuote(meta.DataDir),
+		shellQuote(archiveLogPath),
+		shellQuote(serverLogPath),
 		shellQuote(mode),
 		shellQuote(meta.Pgrman.BackupDir),
 		shellQuote(pgrmanBin),
 		shellQuote(meta.Pgrman.BackupDir))
+}
+
+func pgrmanServerLogPath(meta config.InstanceMeta) string {
+	if meta.Pgrman != nil && strings.TrimSpace(meta.Pgrman.SrvLogPath) != "" {
+		return filepath.Clean(meta.Pgrman.SrvLogPath)
+	}
+	return filepath.Join(meta.DataDir, "log")
+}
+
+func recoverPgrmanConfigFromCatalog(meta config.InstanceMeta) (config.InstanceMeta, bool, error) {
+	if meta.Pgrman == nil || strings.TrimSpace(meta.Pgrman.BackupDir) == "" {
+		return meta, false, nil
+	}
+	content, err := os.ReadFile(filepath.Join(meta.Pgrman.BackupDir, "pg_rman.ini"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return meta, false, nil
+		}
+		return meta, false, err
+	}
+	values := make(map[string]string)
+	for _, line := range strings.Split(string(content), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			values[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), "'\"")
+		}
+	}
+	bk := *meta.Pgrman
+	changed := false
+	setString := func(target *string, key string) {
+		if strings.TrimSpace(*target) == "" && values[key] != "" {
+			*target = values[key]
+			changed = true
+		}
+	}
+	setInt := func(target *int, key string) {
+		if *target != 0 || values[key] == "" {
+			return
+		}
+		if value, parseErr := strconv.Atoi(values[key]); parseErr == nil {
+			*target = value
+			changed = true
+		}
+	}
+	setString(&bk.SrvLogPath, "SRVLOG_PATH")
+	setString(&bk.ArcLogPath, "ARCLOG_PATH")
+	setString(&bk.CompressData, "COMPRESS_DATA")
+	setInt(&bk.KeepArcLogDays, "KEEP_ARCLOG_DAYS")
+	setInt(&bk.KeepSrvLogDays, "KEEP_SRVLOG_DAYS")
+	setInt(&bk.KeepDataDays, "KEEP_DATA_DAYS")
+	meta.Pgrman = &bk
+	return meta, changed, nil
+}
+
+func recoverAndPersistPgrmanConfig(instanceName string, meta config.InstanceMeta) (config.InstanceMeta, error) {
+	recoveredMeta, changed, err := recoverPgrmanConfigFromCatalog(meta)
+	if err != nil || !changed {
+		return recoveredMeta, err
+	}
+	if err := config.SaveInstancePgrmanConfig(instanceName, recoveredMeta.Pgrman); err != nil {
+		return recoveredMeta, err
+	}
+	fmt.Fprintln(os.Stderr, i18n.T("pgrman_config_recovered", instanceName, recoveredMeta.Pgrman.BackupDir))
+	return recoveredMeta, nil
+}
+
+func pgrmanArchiveLogPath(meta config.InstanceMeta) string {
+	if meta.Pgrman != nil && strings.TrimSpace(meta.Pgrman.ArcLogPath) != "" {
+		return filepath.Clean(meta.Pgrman.ArcLogPath)
+	}
+	return utils.GetPgMgrArchiveDir(filepath.Join(meta.DataDir, "postgresql.conf"))
 }
 
 func validatePgrmanBackupDate(date string) error {
@@ -653,6 +733,23 @@ func runPgrmanDelete(date string) error {
 	if UI.NonInteractive && !UI.Yes {
 		return interaction.MissingFlags("--yes")
 	}
+	if !UI.NonInteractive {
+		fmt.Fprintln(os.Stderr, i18n.T("delete_bk_instance", instName))
+		fmt.Fprintln(os.Stderr, i18n.T("delete_bk_catalog", meta.Pgrman.BackupDir))
+		fmt.Fprintln(os.Stderr, i18n.T("delete_bk_sets", date))
+		fmt.Fprintln(os.Stderr, i18n.T("delete_bk_retention"))
+		choice, err := interaction.NewPrompt(os.Stdin, os.Stderr).Menu(
+			i18n.T("delete_bk_confirm"),
+			[]string{i18n.T("option_yes"), i18n.T("option_no")},
+			1,
+		)
+		if err != nil {
+			return err
+		}
+		if choice != 0 {
+			return interaction.ErrCancelled
+		}
+	}
 
 	deleteCmdStr := buildPgrmanDeleteCommand(meta, date)
 	execCmdStr := utils.BuildInstanceCmd(meta, deleteCmdStr)
@@ -686,7 +783,17 @@ func runPgrmanDelete(date string) error {
 	return nil
 }
 
-func runBackupList() {
+type backupListResult struct {
+	Instance        string `json:"instance"`
+	Tool            string `json:"tool,omitempty"`
+	BackupDir       string `json:"backup_dir,omitempty"`
+	FullCron        string `json:"full_cron,omitempty"`
+	IncrementalCron string `json:"incremental_cron,omitempty"`
+	ScheduleEnabled bool   `json:"schedule_enabled"`
+	Configured      bool   `json:"configured"`
+}
+
+func runBackupList() error {
 	out, _ := exec.Command("systemctl", "is-active", "pg_mgr.service").Output()
 	statusStr := strings.TrimSpace(string(out))
 	if statusStr == "" {
@@ -697,11 +804,39 @@ func runBackupList() {
 		daemonStatusText = text.FgHiGreen.Sprint(statusStr)
 	}
 
-	fmt.Printf("%s: %s\n\n", i18n.T("lbl_daemon_status"), daemonStatusText)
+	if UI.Output != string(interaction.OutputJSON) {
+		fmt.Printf("%s: %s\n\n", i18n.T("lbl_daemon_status"), daemonStatusText)
+	}
 
 	if len(config.Global.Instances) == 0 {
+		if UI.Output == string(interaction.OutputJSON) {
+			return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"daemon_status": statusStr, "instances": []backupListResult{}})
+		}
 		fmt.Println(text.FgHiYellow.Sprint(i18n.T("err_no_instances")))
-		return
+		return nil
+	}
+
+	names := make([]string, 0, len(config.Global.Instances))
+	for name := range config.Global.Instances {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	results := make([]backupListResult, 0, len(names))
+	for _, name := range names {
+		meta := config.Global.Instances[name]
+		item := backupListResult{Instance: name}
+		if meta.Pgrman != nil && meta.Pgrman.Tool != "" {
+			item.Configured = true
+			item.Tool = meta.Pgrman.Tool
+			item.BackupDir = meta.Pgrman.BackupDir
+			item.FullCron = getFullCronExpr(meta.Pgrman)
+			item.IncrementalCron = getIncrCronExpr(meta.Pgrman)
+			item.ScheduleEnabled = isBackupScheduleEnabled(meta.Pgrman)
+		}
+		results = append(results, item)
+	}
+	if UI.Output == string(interaction.OutputJSON) {
+		return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"daemon_status": statusStr, "instances": results})
 	}
 
 	t := table.NewWriter()
@@ -752,6 +887,7 @@ func runBackupList() {
 	t.AppendSeparator()
 	t.SetStyle(table.StyleLight)
 	t.Render()
+	return nil
 }
 
 func promptInt(label string, defaultVal int) int {

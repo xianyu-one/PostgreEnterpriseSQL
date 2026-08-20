@@ -536,3 +536,37 @@ func TestRunAsUserWithCombinedOutputDoesNotSuToCurrentUser(t *testing.T) {
 		t.Fatalf("output = %q, want direct-execution", out)
 	}
 }
+
+func TestRunAsUserPreservesCombinedOutputWhenCommandFails(t *testing.T) {
+	currentUser, err := GetCurrentOSUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = RunAsUser(currentUser, "printf 'pg_upgrade fatal detail'; printf ' stderr detail' >&2; exit 1")
+	if err == nil {
+		t.Fatal("expected command to fail")
+	}
+	for _, want := range []string{"pg_upgrade fatal detail", "stderr detail"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestRunAsUserWithLiveOutputStreamsAndCaptures(t *testing.T) {
+	currentUser, err := GetCurrentOSUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live bytes.Buffer
+	output, err := RunAsUserWithLiveOutput(currentUser, "printf stdout-detail; printf stderr-detail >&2", &live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"stdout-detail", "stderr-detail"} {
+		if !strings.Contains(output, want) || !strings.Contains(live.String(), want) {
+			t.Fatalf("output = %q, live = %q, both should contain %q", output, live.String(), want)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,10 +24,13 @@ func TestRunUseCommand(t *testing.T) {
 	config.Global.BaseDir = "/app/postgresql"
 	config.Global.Instances = map[string]config.InstanceMeta{
 		"test_inst": {
-			User:    "nobody",
-			DataDir: "/app/postgresql/data_test_inst",
-			BinPath: "/app/postgresql/16/9/bin/postgres",
-			Port:    "5432",
+			User:         "nobody",
+			DataDir:      "/app/postgresql/data_test_inst",
+			BinPath:      "/app/postgresql/16/9/bin/postgres",
+			Port:         "5432",
+			DatabaseUser: "postgres",
+			DatabaseName: "postgres",
+			Pgrman:       &config.PgrmanConfig{BackupDir: "/custom/backup"},
 		},
 	}
 
@@ -60,11 +64,13 @@ func TestRunUseCommand(t *testing.T) {
 	// Verify stdout contains the correct export commands
 	expectedStdoutLines := []string{
 		"export PG_VERSION_PATH='/app/postgresql/16/9'",
-		"export PG_RMAN_BACK_PATH='/app/postgresql/backup_test_inst'",
+		"export PG_RMAN_BACK_PATH='/custom/backup'",
 		"export PATH='/app/postgresql/16/9/bin':$PATH",
 		"export PGDATA='/app/postgresql/data_test_inst'",
 		"export LD_LIBRARY_PATH=':/app/postgresql/16/9/lib/'",
 		"export PGPORT='5432'",
+		"export PGUSER='postgres'",
+		"export PGDATABASE='postgres'",
 	}
 
 	for _, line := range expectedStdoutLines {
@@ -76,6 +82,50 @@ func TestRunUseCommand(t *testing.T) {
 	// Stderr should contain instructions/warnings but not stdout commands
 	if !strings.Contains(stderrStr, "Run 'eval $(pg_mgr use <instance_name>)'") {
 		t.Errorf("stderr missing run instructions\nGot:\n%s", stderrStr)
+	}
+}
+
+func TestEnsurePgMgrUseShellIntegrationAutomaticallyAppliesEnvironment(t *testing.T) {
+	pgrcPath := filepath.Join(t.TempDir(), ".pgrc")
+	if err := ensurePgMgrUseShellIntegration(pgrcPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePgMgrUseShellIntegration(pgrcPath); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(pgrcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if strings.Count(text, "PG_MGR_USE_SHELL_INTEGRATION_START") != 1 {
+		t.Fatalf("shell integration was not installed idempotently:\n%s", text)
+	}
+	for _, want := range []string{`pg_mgr()`, `eval "$(command pg_mgr "$@")"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("shell integration missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestLoadedPgMgrShellIntegrationUpdatesCallingShell(t *testing.T) {
+	root := t.TempDir()
+	pgrcPath := filepath.Join(root, ".pgrc")
+	if err := ensurePgMgrUseShellIntegration(pgrcPath); err != nil {
+		t.Fatal(err)
+	}
+	fakeBin := filepath.Join(root, "pg_mgr")
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\nprintf \"export PGPORT=51721\\n\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("sh", "-c", `. "$1"; pg_mgr use test >/dev/null; printf %s "$PGPORT"`, "sh", pgrcPath)
+	command.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"))
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("shell integration failed: %v: %s", err, output)
+	}
+	if string(output) != "51721" {
+		t.Fatalf("PGPORT = %q, want 51721", output)
 	}
 }
 
