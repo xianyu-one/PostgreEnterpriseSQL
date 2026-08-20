@@ -11,6 +11,14 @@ import (
 	"pg_mgr/internal/utils"
 )
 
+func TestManagedArchiveCopyCommandIsIdempotentWhenWalAlreadyExists(t *testing.T) {
+	got := managedArchiveCopyCommand("/archive/instance")
+	want := "export PG_ARCHDIR=/archive/instance && (test -f $PG_ARCHDIR/%f || cp %p $PG_ARCHDIR/%f)"
+	if got != want {
+		t.Fatalf("managedArchiveCopyCommand() = %q, want %q", got, want)
+	}
+}
+
 func TestArchiveManagement(t *testing.T) {
 	oldCheck := archiveCheckRoot
 	archiveCheckRoot = func() bool { return true }

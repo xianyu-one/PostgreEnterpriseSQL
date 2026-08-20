@@ -43,6 +43,10 @@ var (
 		out, err := utils.RunAsUserWithCombinedOutputForInstance(meta.User, meta, command)
 		return []byte(out), err
 	}
+	runPgrmanInitForRun = func(meta config.InstanceMeta, command string) ([]byte, error) {
+		out, err := utils.RunAsUserWithCombinedOutputForInstance(meta.User, meta, command)
+		return []byte(out), err
+	}
 )
 
 var backupCmd = &cobra.Command{
@@ -524,6 +528,9 @@ func runPgrmanRun(cmd *cobra.Command) error {
 	if err := ensureInstancePermission(instName); err != nil {
 		return err
 	}
+	if err := ensurePgrmanCatalogReady(meta); err != nil {
+		return err
+	}
 	connection, err := database.Resolve(instName, meta, true)
 	if err != nil {
 		return err
@@ -665,6 +672,33 @@ func recoverAndPersistPgrmanConfig(instanceName string, meta config.InstanceMeta
 	}
 	fmt.Fprintln(os.Stderr, i18n.T("pgrman_config_recovered", instanceName, recoveredMeta.Pgrman.BackupDir))
 	return recoveredMeta, nil
+}
+
+func ensurePgrmanCatalogReady(meta config.InstanceMeta) error {
+	backupDir := filepath.Clean(meta.Pgrman.BackupDir)
+	needsInit, err := backupCatalogNeedsInit(backupDir, backupDir)
+	if err != nil {
+		return err
+	}
+	if !needsInit {
+		return nil
+	}
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		return err
+	}
+	command := fmt.Sprintf("%s init -B %s -D %s", shellQuote(getPgrmanBin(meta)), shellQuote(backupDir), shellQuote(meta.DataDir))
+	output, err := runPgrmanInitForRun(meta, command)
+	if err != nil {
+		return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_pgrman_init_failed", strings.TrimSpace(string(output))), interaction.ExitExecution).WithCause(err)
+	}
+	iniContent := fmt.Sprintf("SRVLOG_PATH='%s'\nARCLOG_PATH='%s'\nCOMPRESS_DATA=%s\nKEEP_ARCLOG_DAYS=%d\nKEEP_SRVLOG_DAYS=%d\nKEEP_DATA_DAYS=%d\n",
+		pgrmanServerLogPath(meta), pgrmanArchiveLogPath(meta), meta.Pgrman.CompressData,
+		meta.Pgrman.KeepArcLogDays, meta.Pgrman.KeepSrvLogDays, meta.Pgrman.KeepDataDays)
+	if err := os.WriteFile(filepath.Join(backupDir, "pg_rman.ini"), []byte(iniContent), 0644); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, i18n.T("pgrman_catalog_reinitialized", backupDir))
+	return nil
 }
 
 func pgrmanArchiveLogPath(meta config.InstanceMeta) string {
@@ -1109,15 +1143,12 @@ func runPgrmanEdit(cmd *cobra.Command) (runErr error) {
 }
 
 func backupCatalogNeedsInit(oldBackupDir, newBackupDir string) (bool, error) {
-	if oldBackupDir == newBackupDir {
-		return false, nil
-	}
-	entries, err := os.ReadDir(newBackupDir)
+	_, err := os.Stat(filepath.Join(newBackupDir, "system_identifier"))
 	if os.IsNotExist(err) {
 		return true, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return len(entries) == 0, nil
+	return false, nil
 }

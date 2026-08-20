@@ -228,7 +228,7 @@ func runArchiveEnable(instanceName string) error {
 	newPgMgrCmd := archiveCommand
 	if newPgMgrCmd == "" && archiveDir != "" {
 		targetDir = filepath.Clean(archiveDir)
-		newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", targetDir)
+		newPgMgrCmd = managedArchiveCopyCommand(targetDir)
 	}
 
 	if newPgMgrCmd == "" && !archiveSilent {
@@ -237,9 +237,9 @@ func runArchiveEnable(instanceName string) error {
 			defaultDir := filepath.Join(config.Global.BaseDir, "archive", instanceName)
 			dir := utils.PromptPath(i18n.T("prompt_archive_dir"), defaultDir)
 			targetDir = filepath.Clean(dir)
-			newPgMgrCmd = fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", targetDir)
+			newPgMgrCmd = managedArchiveCopyCommand(targetDir)
 		} else {
-			defaultCmd := fmt.Sprintf("export PG_ARCHDIR=%s && test ! -f $PG_ARCHDIR/%%f && cp %%p $PG_ARCHDIR/%%f", filepath.Join(config.Global.BaseDir, "archive", instanceName))
+			defaultCmd := managedArchiveCopyCommand(filepath.Join(config.Global.BaseDir, "archive", instanceName))
 			newPgMgrCmd = utils.PromptInput(i18n.T("prompt_archive_cmd"), defaultCmd)
 			targetDir = utils.ExtractArchiveDirFromCmd(newPgMgrCmd)
 		}
@@ -352,6 +352,10 @@ func runArchiveEnable(instanceName string) error {
 	}
 	fmt.Fprintln(os.Stderr, text.FgHiYellow.Sprint(i18n.T("archive_check_notice", meta.Port)))
 	return nil
+}
+
+func managedArchiveCopyCommand(targetDir string) string {
+	return fmt.Sprintf("export PG_ARCHDIR=%s && (test -f $PG_ARCHDIR/%%f || cp %%p $PG_ARCHDIR/%%f)", targetDir)
 }
 
 func runArchiveDisable(instanceName string) error {

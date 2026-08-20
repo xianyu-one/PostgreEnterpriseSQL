@@ -47,8 +47,8 @@ func TestBackupScheduleEnabledIsBackwardCompatible(t *testing.T) {
 func TestBackupCatalogNeedsInit(t *testing.T) {
 	tempDir := t.TempDir()
 	oldDir := filepath.Join(tempDir, "old")
-	if needsInit, err := backupCatalogNeedsInit(oldDir, oldDir); err != nil || needsInit {
-		t.Fatalf("unchanged catalog should not be initialized: needsInit=%v err=%v", needsInit, err)
+	if needsInit, err := backupCatalogNeedsInit(oldDir, oldDir); err != nil || !needsInit {
+		t.Fatalf("missing unchanged catalog should be initialized: needsInit=%v err=%v", needsInit, err)
 	}
 
 	newDir := filepath.Join(tempDir, "new")
@@ -58,11 +58,60 @@ func TestBackupCatalogNeedsInit(t *testing.T) {
 	if err := os.MkdirAll(newDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(newDir, "backup.ini"), []byte("catalog"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(newDir, "system_identifier"), []byte("catalog"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if needsInit, err := backupCatalogNeedsInit(oldDir, newDir); err != nil || needsInit {
 		t.Fatalf("non-empty migrated catalog should not be initialized: needsInit=%v err=%v", needsInit, err)
+	}
+}
+
+func TestEnsurePgrmanCatalogReadyInitializesMissingCatalog(t *testing.T) {
+	backupDir := t.TempDir()
+	meta := config.InstanceMeta{
+		User:    "nobody",
+		DataDir: "/data/instance",
+		BinPath: "/pg/bin/postgres",
+		Pgrman: &config.PgrmanConfig{
+			Tool: "pgrman", BackupDir: backupDir, SrvLogPath: "/data/log", ArcLogPath: "/data/archive", CompressData: "YES",
+		},
+	}
+	original := runPgrmanInitForRun
+	t.Cleanup(func() { runPgrmanInitForRun = original })
+	called := false
+	runPgrmanInitForRun = func(got config.InstanceMeta, command string) ([]byte, error) {
+		called = true
+		if !strings.Contains(command, " init ") || !strings.Contains(command, backupDir) {
+			t.Fatalf("unexpected init command: %s", command)
+		}
+		return nil, os.WriteFile(filepath.Join(backupDir, "system_identifier"), []byte("123"), 0644)
+	}
+	if err := ensurePgrmanCatalogReady(meta); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("pg_rman init was not called")
+	}
+	content, err := os.ReadFile(filepath.Join(backupDir, "pg_rman.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "SRVLOG_PATH='/data/log'") {
+		t.Fatalf("recreated pg_rman.ini = %s", content)
+	}
+}
+
+func TestBackupCatalogNeedsInitWhenConfiguredCatalogLacksSystemIdentifier(t *testing.T) {
+	backupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backupDir, "pg_rman.ini"), []byte("SRVLOG_PATH='/data/log'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	needsInit, err := backupCatalogNeedsInit(backupDir, backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !needsInit {
+		t.Fatal("catalog without system_identifier must be reinitialized before backup")
 	}
 }
 
