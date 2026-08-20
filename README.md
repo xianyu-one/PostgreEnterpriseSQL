@@ -134,6 +134,35 @@ sudo pg_mgr upgrade \
   --target-version 16.15
 ```
 
+If the instance has a `pg_mgr`-managed pg_rman configuration, `upgrade` first creates and validates a fresh full backup while the old instance is still running. The database service is stopped only after that backup succeeds.
+
+For major upgrades, `pg_mgr` reads the old cluster's actual data-checksum state with its `pg_controldata`, probes the target `initdb` for supported checksum options, and verifies the initialized target cluster again with the target `pg_controldata`. The upgrade stops before `pg_upgrade` if the states do not match; no PostgreSQL-version assumption is used.
+
+To deliberately skip this protection in an interactive terminal, pass `--skip-backup` and confirm the displayed recovery risk. Automation requires all three explicit acknowledgements:
+```bash
+pg_mgr upgrade \
+  --instance sales-db \
+  --target-version 18.6 \
+  --skip-backup \
+  --accept-no-backup-risk \
+  --non-interactive \
+  --yes
+```
+
+### 9. Update `pg_mgr`
+After building or downloading a new `pg_mgr` binary, update the currently installed executable without manually stopping and copying the daemon binary:
+```bash
+sudo pg_mgr self-update --binary /path/to/new/pg_mgr
+```
+The command validates the candidate, stops the `pg_mgr` daemon only when it is running, replaces the executable atomically, and restarts the daemon. If the new daemon cannot start, the previous executable is restored automatically. For automation, add `--non-interactive --yes`.
+
+To bootstrap this command from an older installation that does not yet provide `self-update`, run the newly built binary and identify the installed target explicitly:
+```bash
+sudo ./output/sbin/pg_mgr self-update \
+  --binary ./output/sbin/pg_mgr \
+  --target "$(command -v pg_mgr)"
+```
+
 ---
 
 ## Standalone Utilities Guide

@@ -75,6 +75,7 @@
 | | `pg_mgr daemon start/stop/restart/reload/status/run` | - | 管理守护进程服务状态 |
 | **自动补全** | `pg_mgr completion install [bash\|zsh]` | - | 安装 Shell 自动补全脚本 |
 | | `pg_mgr completion remove [bash\|zsh]` | `completion uninstall` | 卸载 Shell 自动补全脚本 |
+| **工具自身** | `pg_mgr self-update --binary PATH [--target PATH]` | `pg_mgr update` | 使用本地新版二进制原子更新当前安装；`--target` 可引导升级尚无此命令的旧安装；运行中的 daemon 会安全重启，失败时恢复旧版本 |
 
 ---
 

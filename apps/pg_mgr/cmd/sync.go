@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -9,6 +10,7 @@ import (
 
 	"pg_mgr/internal/config"
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/process"
 	"pg_mgr/internal/utils"
 )
@@ -16,6 +18,7 @@ import (
 var (
 	checkRoot       = func() bool { return utils.IsRoot() }
 	findPgProcesses = process.FindPgProcesses
+	syncConflict    string
 )
 
 var syncCmd = &cobra.Command{
@@ -25,14 +28,58 @@ var syncCmd = &cobra.Command{
 		if !checkRoot() {
 			return utils.CheckRoot()
 		}
+		if UI.NonInteractive {
+			return scanAndSyncAutomation()
+		}
 		scanAndSyncInstances()
 		return nil
 	},
 }
 
 func init() {
+	syncCmd.Flags().StringVar(&syncConflict, "conflict", "", i18n.T("flag_sync_conflict"))
 	InstanceCmd.AddCommand(syncCmd)
 	RootCmd.AddCommand(syncCmd)
+}
+
+func scanAndSyncAutomation() error {
+	if syncConflict != "" && syncConflict != "update" && syncConflict != "skip" {
+		return interaction.NewError(interaction.CodeInvalidInput, i18n.T("err_sync_conflict"), interaction.ExitUsage)
+	}
+	procs := findPgProcesses()
+	updated, conflicts := 0, 0
+	for _, proc := range procs {
+		procDataDir := filepath.Clean(proc.DataDir)
+		matchedName := ""
+		for name, meta := range config.Global.Instances {
+			if (filepath.Clean(meta.DataDir) == procDataDir && meta.Port != proc.Port) ||
+				(meta.Port == proc.Port && filepath.Clean(meta.DataDir) != procDataDir) {
+				matchedName = name
+				break
+			}
+		}
+		if matchedName == "" {
+			continue
+		}
+		conflicts++
+		if syncConflict == "" {
+			return interaction.MissingFlags("--conflict=update|skip")
+		}
+		if syncConflict == "update" {
+			if err := config.SaveInstanceToRegistry(matchedName, proc.OSUser, procDataDir, proc.BinPath, proc.Port); err != nil {
+				return err
+			}
+			updated++
+		}
+	}
+	if updated > 0 {
+		config.InitConfig()
+	}
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	return interaction.NewRenderer(os.Stdout, os.Stderr, mode, UI.Quiet).Success(map[string]any{"scanned": len(procs), "conflicts": conflicts, "updated": updated, "status": "synchronized"})
 }
 
 func scanAndSyncInstances() {

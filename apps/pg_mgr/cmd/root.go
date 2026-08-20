@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -89,6 +90,12 @@ func Execute() int {
 }
 
 func renderRootError(stdout, stderr io.Writer, err error) int {
+	if errors.Is(err, interaction.ErrCancelled) {
+		if UI.Output != string(interaction.OutputJSON) {
+			fmt.Fprintln(stderr, i18n.T("abort"))
+		}
+		return 0
+	}
 	message := err.Error()
 	if strings.HasPrefix(message, "unknown command") || strings.Contains(message, "unknown flag") || strings.Contains(message, "requires exactly") || strings.Contains(message, "accepts ") {
 		err = interaction.NewError(interaction.CodeInvalidInput, message, interaction.ExitUsage).WithCause(err)

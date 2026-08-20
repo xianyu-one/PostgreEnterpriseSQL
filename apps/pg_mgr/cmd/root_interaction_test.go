@@ -55,6 +55,22 @@ func TestCobraUsageErrorsMapToExitTwo(t *testing.T) {
 	}
 }
 
+func TestCancellationIsReportedWithoutAnErrorExit(t *testing.T) {
+	old := UI
+	t.Cleanup(func() { UI = old })
+	UI.Output = "table"
+	var stdout, stderr bytes.Buffer
+	if code := renderRootError(&stdout, &stderr, interaction.ErrCancelled); code != 0 {
+		t.Fatalf("cancellation exit code = %d, want 0", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if strings.TrimSpace(stderr.String()) == "" {
+		t.Fatal("cancellation should be reported on stderr")
+	}
+}
+
 func TestArchiveIsAResourceGroup(t *testing.T) {
 	if archiveCmd.Run != nil || archiveCmd.RunE != nil {
 		t.Fatal("archive without a subcommand must display help, not run an implicit status action")

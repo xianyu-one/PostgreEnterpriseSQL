@@ -283,11 +283,12 @@ Successful write operations end with a concise result and at most three actionab
 | `instance modify` | Instance and fields to edit | Yes | For disruptive/destructive changes | Before/after result |
 | `instance remove` | Instance and retention choice | Impact summary | Always, default no | Removal result |
 | `instance adopt` / `sync` | Detected target and conflict resolution | Yes | Before registry/system changes | Result object |
-| `instance upgrade` | Instance, target version, migration choices | Yes | Downtime and migration impact | Staged result |
+| `instance upgrade` | Instance, target version, migration choices | Yes | Fresh managed full backup is mandatory when configured; bypass requires `--skip-backup` plus a second risk acknowledgement | Staged result |
 | service controls | Missing instance only | No | Stop/restart when not already explicit in a complete invocation | Status result |
 | `backup init` / `modify` | Configuration fields | Yes | Migration or overwrite impact | Configuration result |
 | backup removal/delete | Instance, deletion scope/date | Impact summary | Always, default no | Deletion result |
 | archive enable/disable/set | Instance and configuration | Yes for `set` | Restart/migration impact | Configuration result |
+| `self-update` | Local candidate binary | Impact summary | Always; `--yes` non-interactively | Update and daemon restart result |
 | list/show/status/use | Missing instance where applicable | No | No | `table` or `json` |
 | resource group without leaf | None | No | No | Help only |
 

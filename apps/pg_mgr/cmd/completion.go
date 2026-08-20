@@ -1,13 +1,12 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
-	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 
 	"pg_mgr/internal/i18n"
+	"pg_mgr/internal/interaction"
 	"pg_mgr/internal/utils"
 )
 
@@ -56,8 +55,7 @@ func handleCompletion(cmd *cobra.Command, args []string, action string) error {
 	case "zsh":
 		targetFile = "/usr/local/share/zsh/site-functions/_pg_mgr"
 	default:
-		fmt.Fprintln(os.Stderr, i18n.T("completion_unsupported"))
-		return fmt.Errorf("unsupported shell %q", shell)
+		return interaction.NewError(interaction.CodeInvalidInput, i18n.T("completion_unsupported"), interaction.ExitUsage).WithDetail("shell", shell)
 	}
 
 	if action == "install" {
@@ -66,7 +64,6 @@ func handleCompletion(cmd *cobra.Command, args []string, action string) error {
 		}
 		file, err := os.OpenFile(targetFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
-			fmt.Println(text.FgHiRed.Sprint(i18n.T("err_failed", err)))
 			return err
 		}
 		defer file.Close()
@@ -76,13 +73,18 @@ func handleCompletion(cmd *cobra.Command, args []string, action string) error {
 		} else {
 			cmd.Root().GenZshCompletion(file)
 		}
-		fmt.Printf("%s\n%s\n", text.FgHiGreen.Sprint(i18n.T("done")), i18n.T("completion_reload"))
 	} else if action == "uninstall" {
 		if err := os.Remove(targetFile); err != nil && !os.IsNotExist(err) {
 			return err
-		} else {
-			fmt.Println(text.FgHiGreen.Sprint(i18n.T("done")))
 		}
 	}
-	return nil
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
+	}
+	result := map[string]any{"shell": shell, "action": action, "path": targetFile, "status": "completed"}
+	if action == "install" {
+		result["guidance"] = i18n.T("completion_reload")
+	}
+	return interaction.NewRenderer(os.Stdout, os.Stderr, mode, UI.Quiet).Success(result)
 }

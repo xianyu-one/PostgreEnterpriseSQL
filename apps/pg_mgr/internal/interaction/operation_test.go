@@ -24,7 +24,7 @@ func TestOperationTracksStagesAndRecovery(t *testing.T) {
 	if result.Stages[0].State != StageCompleted || result.Stages[1].State != StageFailed || result.Stages[2].State != StageRolledBack {
 		t.Fatalf("stages = %#v", result.Stages)
 	}
-	for _, want := range []string{"completed: create directory", "failed: create service", "rolled back: remove service file"} {
+	for _, want := range []string{"running: create directory", "completed: create directory", "running: create service", "failed: create service", "rolled back: remove service file"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("output missing %q: %q", want, stderr.String())
 		}

@@ -71,8 +71,52 @@ var modifyCmd = &cobra.Command{
 				return err
 			}
 		}
+		if !UI.NonInteractive {
+			if err := reviewModify(instanceName); err != nil {
+				return err
+			}
+		}
 		return runModify(instanceName)
 	},
+}
+
+func reviewModify(instanceName string) error {
+	for {
+		meta, ok := config.Global.Instances[instanceName]
+		if !ok {
+			return interaction.NewError(interaction.CodeTargetNotFound, i18n.T("err_not_reg", instanceName), interaction.ExitTarget)
+		}
+		value := func(candidate, current string) string {
+			if candidate != "" {
+				return candidate
+			}
+			return current
+		}
+		interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputTable, UI.Quiet).Review(i18n.T("review_modify_instance"), []interaction.ReviewField{
+			{Label: i18n.T("tbl_inst"), Value: instanceName},
+			{Label: i18n.T("tbl_port"), Value: value(modifyPort, meta.Port)},
+			{Label: i18n.T("tbl_ver_path"), Value: value(modifyBinPath, meta.BinPath)},
+			{Label: i18n.T("tbl_datadir"), Value: value(modifyDataDir, meta.DataDir)},
+			{Label: i18n.T("tbl_user"), Value: value(modifyOSUser, meta.User)},
+			{Label: i18n.T("tbl_db_user"), Value: value(modifyDBUser, meta.DatabaseUser)},
+			{Label: i18n.T("tbl_database_name"), Value: value(modifyDatabaseName, meta.DatabaseName)},
+		})
+		choice, err := interaction.NewPrompt(os.Stdin, os.Stderr).Menu(i18n.T("review_modify_instance"), []string{i18n.T("review_execute"), i18n.T("review_modify")}, 0)
+		if err != nil {
+			return err
+		}
+		if choice == 0 {
+			return nil
+		}
+		if err := promptModifyField(); err != nil {
+			return err
+		}
+		if modifyOSUser != "" {
+			if err := utils.CheckInstancePermission(instanceName); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func hasModifyChanges() bool {
@@ -190,7 +234,10 @@ func runModify(instanceName string) error {
 
 	var restartNeeded bool
 	if isActive {
-		if utils.PromptConfirm(i18n.T("prompt_restart_now")) {
+		if UI.NonInteractive && !UI.Yes {
+			return interaction.MissingFlags("--yes")
+		}
+		if UI.Yes || utils.PromptConfirm(i18n.T("prompt_restart_now")) {
 			restartNeeded = true
 			stopOldService(instanceName, meta.User)
 		} else {
@@ -208,7 +255,7 @@ func runModify(instanceName string) error {
 		if err := utils.MigrateDirectory(oldDataDir, newDataDir); err != nil {
 			return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_migrate_data_failed", err), interaction.ExitExecution).WithCause(err)
 		}
-		fmt.Println(text.FgGreen.Sprint(i18n.T("migrate_data_success", oldDataDir, newDataDir)))
+		fmt.Fprintln(os.Stderr, text.FgGreen.Sprint(i18n.T("migrate_data_success", oldDataDir, newDataDir)))
 		dataDirMigrated = true
 
 		if meta.Pgrman != nil && meta.Pgrman.SrvLogPath != "" {
@@ -254,9 +301,9 @@ func runModify(instanceName string) error {
 	if dataDirMigrated || shouldStart {
 		if err := modifyStartNewService(instanceName, newOSUser); err != nil {
 			if dataDirMigrated {
-				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_migrate_start_failed", newDataDir, err)))
+				fmt.Fprintln(os.Stderr, text.FgHiRed.Sprint(i18n.T("err_migrate_start_failed", newDataDir, err)))
 			} else {
-				fmt.Println(text.FgHiRed.Sprint(i18n.T("err_start_service_failed", err)))
+				fmt.Fprintln(os.Stderr, text.FgHiRed.Sprint(i18n.T("err_start_service_failed", err)))
 			}
 			return err
 		}
@@ -271,12 +318,16 @@ func runModify(instanceName string) error {
 		return err
 	}
 
-	if shouldStart {
-		fmt.Println(i18n.T("restart_success", instanceName))
+	mode := interaction.OutputTable
+	if UI.Output == string(interaction.OutputJSON) {
+		mode = interaction.OutputJSON
 	}
-
-	fmt.Println(i18n.T("modify_success", instanceName))
-	return nil
+	return interaction.NewRenderer(os.Stdout, os.Stderr, mode, UI.Quiet).Success(map[string]any{
+		"instance":  instanceName,
+		"before":    map[string]any{"port": meta.Port, "bin_path": meta.BinPath, "data_dir": meta.DataDir, "os_user": meta.User, "db_user": meta.DatabaseUser, "database": meta.DatabaseName},
+		"after":     map[string]any{"port": newPort, "bin_path": newBinPath, "data_dir": newDataDir, "os_user": newOSUser, "db_user": newDBUser, "database": newDatabaseName},
+		"restarted": shouldStart, "status": "modified",
+	})
 }
 
 func stopOldService(name, osUser string) {

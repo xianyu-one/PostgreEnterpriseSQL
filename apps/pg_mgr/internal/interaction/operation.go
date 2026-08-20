@@ -43,6 +43,7 @@ func (o *Operation) Run(name string, action func() error) error {
 	stage := Stage{Name: name, State: StageRunning}
 	index := len(o.result.Stages)
 	o.result.Stages = append(o.result.Stages, stage)
+	o.line(i18n.T("stage_running"), name)
 	if err := action(); err != nil {
 		o.result.Stages[index].State = StageFailed
 		o.line(i18n.T("stage_failed"), name)
