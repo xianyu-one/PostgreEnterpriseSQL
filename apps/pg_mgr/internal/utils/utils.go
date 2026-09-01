@@ -254,20 +254,49 @@ func ParseLogindRemoveIPC(content string) string {
 }
 
 func RunAsUser(username string, cmdStr string) error {
+	runtimeDir, err := userRuntimeDir(username)
+	if err != nil {
+		return err
+	}
 	currUser, err := GetCurrentOSUser()
 	if err == nil && currUser == username {
-		out, runErr := exec.Command("bash", "-c", cmdStr).CombinedOutput()
+		cmd := exec.Command("bash", "-c", cmdStr)
+		cmd.Env = environmentWithUserRuntimeDir(runtimeDir)
+		out, runErr := cmd.CombinedOutput()
 		if runErr != nil {
 			return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
 	// Use -s /bin/bash to ensure execution works even if the user has /bin/false or /usr/sbin/nologin
+	cmdStr = commandWithUserRuntimeDir(runtimeDir, cmdStr)
 	out, runErr := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr).CombinedOutput()
 	if runErr != nil {
 		return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func userRuntimeDir(username string) (string, error) {
+	u, err := user.Lookup(username)
+	if err != nil {
+		return "", fmt.Errorf("lookup user %s: %w", username, err)
+	}
+	return filepath.Join("/run/user", u.Uid), nil
+}
+
+func environmentWithUserRuntimeDir(runtimeDir string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, "XDG_RUNTIME_DIR=") {
+			env = append(env, value)
+		}
+	}
+	return append(env, "XDG_RUNTIME_DIR="+runtimeDir)
+}
+
+func commandWithUserRuntimeDir(runtimeDir, cmdStr string) string {
+	return "export XDG_RUNTIME_DIR=" + shellQuote(runtimeDir) + "; " + cmdStr
 }
 
 // RunUserSystemctl runs systemctl against username's user manager. Commands
@@ -303,12 +332,18 @@ func shellQuote(value string) string {
 }
 
 func RunAsUserWithOutput(username string, cmdStr string) (string, error) {
+	runtimeDir, err := userRuntimeDir(username)
+	if err != nil {
+		return "", err
+	}
 	currUser, err := GetCurrentOSUser()
 	if err == nil && currUser == username {
 		cmd := exec.Command("bash", "-c", cmdStr)
+		cmd.Env = environmentWithUserRuntimeDir(runtimeDir)
 		out, err := cmd.Output()
 		return strings.TrimSpace(string(out)), err
 	}
+	cmdStr = commandWithUserRuntimeDir(runtimeDir, cmdStr)
 	cmd := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
@@ -318,11 +353,18 @@ func RunAsUserWithOutput(username string, cmdStr string) (string, error) {
 // stdout and stderr. When the caller already is username, it executes directly
 // and never invokes su (which would unnecessarily require authentication).
 func RunAsUserWithCombinedOutput(username string, cmdStr string) (string, error) {
+	runtimeDir, err := userRuntimeDir(username)
+	if err != nil {
+		return "", err
+	}
 	currUser, err := GetCurrentOSUser()
 	if err == nil && currUser == username {
-		out, runErr := exec.Command("bash", "-c", cmdStr).CombinedOutput()
+		cmd := exec.Command("bash", "-c", cmdStr)
+		cmd.Env = environmentWithUserRuntimeDir(runtimeDir)
+		out, runErr := cmd.CombinedOutput()
 		return string(out), runErr
 	}
+	cmdStr = commandWithUserRuntimeDir(runtimeDir, cmdStr)
 	out, runErr := exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr).CombinedOutput()
 	return string(out), runErr
 }
@@ -335,11 +377,17 @@ func RunAsUserWithLiveOutput(username, cmdStr string, writer io.Writer) (string,
 	}
 	var captured bytes.Buffer
 	combined := io.MultiWriter(writer, &captured)
+	runtimeDir, err := userRuntimeDir(username)
+	if err != nil {
+		return "", err
+	}
 	currUser, err := GetCurrentOSUser()
 	var cmd *exec.Cmd
 	if err == nil && currUser == username {
 		cmd = exec.Command("bash", "-c", cmdStr)
+		cmd.Env = environmentWithUserRuntimeDir(runtimeDir)
 	} else {
+		cmdStr = commandWithUserRuntimeDir(runtimeDir, cmdStr)
 		cmd = exec.Command("su", "-s", "/bin/bash", "-", username, "-c", cmdStr)
 	}
 	cmd.Stdout = combined

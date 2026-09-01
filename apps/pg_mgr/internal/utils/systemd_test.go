@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"pg_mgr/internal/config"
 )
 
 func TestRunUserSystemctlProvidesUserRuntimeDirectory(t *testing.T) {
@@ -37,5 +39,34 @@ func TestRunUserSystemctlProvidesUserRuntimeDirectory(t *testing.T) {
 	want := filepath.Join("/run/user", current.Uid) + "\n--user daemon-reload"
 	if got := strings.TrimSpace(string(output)); got != want {
 		t.Fatalf("systemctl environment and arguments = %q, want %q", got, want)
+	}
+}
+
+func TestRunAsUserForInstanceProvidesUserRuntimeDirectory(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "systemctl")
+	stubContent := "#!/bin/sh\nprintf '%s\\n' \"$XDG_RUNTIME_DIR\" \"$*\"\n"
+	if err := os.WriteFile(stub, []byte(stubContent), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/wrong")
+
+	output, err := RunAsUserWithOutputForInstance(
+		current.Username,
+		config.InstanceMeta{User: current.Username},
+		"systemctl --user enable postgresql-pulp.service",
+	)
+	if err != nil {
+		t.Fatalf("instance systemctl command failed: %v", err)
+	}
+	want := filepath.Join("/run/user", current.Uid) + "\n--user enable postgresql-pulp.service"
+	if output != want {
+		t.Fatalf("instance systemctl environment and arguments = %q, want %q", output, want)
 	}
 }

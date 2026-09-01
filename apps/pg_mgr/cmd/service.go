@@ -121,31 +121,24 @@ func manageService(action string, instanceName string) error {
 	}
 
 	if action == "status" {
-		var statusCommand *exec.Cmd
+		var output []byte
+		var err error
 		if meta.User == "root" {
-			statusCommand = exec.Command("systemctl", "status", fmt.Sprintf("postgresql-%s.service", instanceName))
+			output, err = exec.Command("systemctl", "status", fmt.Sprintf("postgresql-%s.service", instanceName)).CombinedOutput()
 		} else {
 			cmdStr := fmt.Sprintf("systemctl --user status postgresql-%s.service", instanceName)
-			fullCmdStr := utils.BuildInstanceCmd(meta, cmdStr)
-			currUser, err := utils.GetCurrentOSUser()
-			var cmd *exec.Cmd
-			if err == nil && currUser == meta.User {
-				cmd = exec.Command("bash", "-c", fullCmdStr)
-			} else {
-				cmd = exec.Command("su", "-s", "/bin/bash", "-", meta.User, "-c", fullCmdStr)
-			}
-			statusCommand = cmd
+			var textOutput string
+			textOutput, err = utils.RunAsUserWithCombinedOutputForInstance(meta.User, meta, cmdStr)
+			output = []byte(textOutput)
 		}
 		if UI.Output == string(interaction.OutputJSON) {
-			output, err := statusCommand.CombinedOutput()
 			if err != nil {
 				return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err).WithDetail("output", string(output))
 			}
 			return interaction.NewRenderer(os.Stdout, os.Stderr, interaction.OutputJSON, UI.Quiet).Success(map[string]any{"instance": instanceName, "status": string(output)})
 		}
-		statusCommand.Stdout = os.Stdout
-		statusCommand.Stderr = os.Stderr
-		if err := statusCommand.Run(); err != nil {
+		_, _ = os.Stdout.Write(output)
+		if err != nil {
 			return interaction.NewError(interaction.CodeExecutionFailed, i18n.T("err_failed", err), interaction.ExitExecution).WithCause(err)
 		}
 		return nil
