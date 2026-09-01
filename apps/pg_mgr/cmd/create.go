@@ -336,13 +336,21 @@ WantedBy=%s
 
 	if err := executeStep(i18n.T("step_start"), func() error {
 		if osUser == "root" {
-			utils.RunCmd("systemctl", "daemon-reload")
-			utils.RunCmd("systemctl", "enable", serviceName)
+			if err := utils.RunCmd("systemctl", "daemon-reload"); err != nil {
+				return err
+			}
+			if err := utils.RunCmd("systemctl", "enable", serviceName); err != nil {
+				return err
+			}
 			return utils.RunCmd("systemctl", "start", serviceName)
 		} else {
-			utils.RunAsUser(osUser, "systemctl --user daemon-reload")
-			utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user enable %s", serviceName))
-			return utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user start %s", serviceName))
+			if err := utils.RunUserSystemctl(osUser, "daemon-reload"); err != nil {
+				return err
+			}
+			if err := utils.RunUserSystemctl(osUser, "enable", serviceName); err != nil {
+				return err
+			}
+			return utils.RunUserSystemctl(osUser, "start", serviceName)
 		}
 	}); err != nil {
 		return err
@@ -510,8 +518,8 @@ func cleanupFailedCreate(osUser, versionPathFull, dataDir, backupDir, serviceNam
 		_ = utils.RunCmd("systemctl", "stop", serviceName)
 		_ = utils.RunCmd("systemctl", "disable", serviceName)
 	} else {
-		_ = utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user stop %s", serviceName))
-		_ = utils.RunAsUser(osUser, fmt.Sprintf("systemctl --user disable %s", serviceName))
+		_ = utils.RunUserSystemctl(osUser, "stop", serviceName)
+		_ = utils.RunUserSystemctl(osUser, "disable", serviceName)
 	}
 	if servicePath != "" {
 		_ = os.Remove(servicePath)
@@ -519,7 +527,7 @@ func cleanupFailedCreate(osUser, versionPathFull, dataDir, backupDir, serviceNam
 	if osUser == "root" {
 		_ = utils.RunCmd("systemctl", "daemon-reload")
 	} else {
-		_ = utils.RunAsUser(osUser, "systemctl --user daemon-reload")
+		_ = utils.RunUserSystemctl(osUser, "daemon-reload")
 	}
 	if removeDataDir {
 		_ = os.RemoveAll(dataDir)

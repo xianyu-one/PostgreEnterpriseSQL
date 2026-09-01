@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -267,6 +268,38 @@ func RunAsUser(username string, cmdStr string) error {
 		return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// RunUserSystemctl runs systemctl against username's user manager. Commands
+// launched through su do not reliably inherit XDG_RUNTIME_DIR, even when linger
+// is enabled, so systemctl otherwise cannot locate the user's D-Bus socket.
+func RunUserSystemctl(username string, args ...string) error {
+	u, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("lookup user %s: %w", username, err)
+	}
+	runtimeDir := filepath.Join("/run/user", u.Uid)
+
+	currUser, currentErr := GetCurrentOSUser()
+	if currentErr == nil && currUser == username {
+		cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
+		cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+runtimeDir)
+		out, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			return fmt.Errorf("%v: %s", runErr, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	command := "export XDG_RUNTIME_DIR=" + shellQuote(runtimeDir) + "; systemctl --user"
+	for _, arg := range args {
+		command += " " + shellQuote(arg)
+	}
+	return RunAsUser(username, command)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func RunAsUserWithOutput(username string, cmdStr string) (string, error) {
