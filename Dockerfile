@@ -5,6 +5,7 @@ ARG PGBACKREST_VERSION=2.54.2
 ARG REPMGR_VERSION=v5.4.1
 ARG PGRMAN_BRANCH=REL_16_STABLE
 ARG POSTGIS_VERSION=3.6.4
+ARG GEOS_VERSION=3.10.7
 ARG PGVECTOR_VERSION=0.8.6
 ARG ARCHIVE_NAME=postgresql-16.9-x64-ubuntu22.04.tar.gz
 ARG USE_CHINA_MIRROR=false
@@ -58,6 +59,7 @@ ARG PGBACKREST_VERSION
 ARG REPMGR_VERSION
 ARG PGRMAN_BRANCH
 ARG POSTGIS_VERSION
+ARG GEOS_VERSION
 ARG PGVECTOR_VERSION
 ARG ARCHIVE_NAME
 ARG USE_CHINA_MIRROR=false
@@ -91,6 +93,26 @@ RUN cd /build && \
 ENV PKG_CONFIG_PATH="/build/postgresql-release/lib/pkgconfig"
 ENV PATH="/build/postgresql-release/bin:${PATH}"
 
+# EPEL 8 provides GEOS 3.7, while PostGIS 3.6 requires GEOS 3.8+.
+# Install a compatible GEOS into the release so the runtime library is packaged.
+RUN . /etc/os-release && \
+    if [ "$ID" = "rocky" ] && [ "${VERSION_ID%%.*}" = "8" ]; then \
+        dnf install -y cmake && \
+        wget -q -O /build/geos-${GEOS_VERSION}.tar.bz2 \
+            "https://download.osgeo.org/geos/geos-${GEOS_VERSION}.tar.bz2" && \
+        tar xjf /build/geos-${GEOS_VERSION}.tar.bz2 -C /build && \
+        cmake -S /build/geos-${GEOS_VERSION} -B /build/geos-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/build/postgresql-release \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_TESTING=OFF && \
+        cmake --build /build/geos-build --parallel "$(nproc)" && \
+        cmake --install /build/geos-build && \
+        test "$(geos-config --version)" = "$GEOS_VERSION"; \
+    fi
+
 # Compile PostGIS from its official release archive. The dependency scripts
 # install GEOS, PROJ, GDAL, JSON-C, and protobuf-c development headers.
 RUN cd /build && \
@@ -98,7 +120,7 @@ RUN cd /build && \
     wget -q -O - "$POSTGIS_URL" | \
         tar zx -C /build && \
     cd /build/postgis-${POSTGIS_VERSION} && \
-    LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/..'" \
+    LDFLAGS="-Wl,-rpath,'\$\$ORIGIN/..' -Wl,-rpath,'\$\$ORIGIN'" \
         ./configure \
         --with-pgconfig=/build/postgresql-release/bin/pg_config && \
     make -j "$(nproc)" && \

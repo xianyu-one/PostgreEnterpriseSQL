@@ -23,27 +23,29 @@ echo "Installing build dependencies for $NAME version $VERSION_ID (Major: $VERSI
 
 # Set up repositories based on version
 if [ "$VERSION_MAJOR" -eq 8 ]; then
-    echo "RockyLinux/RHEL 8 detected. Enabling powertools..."
+    echo "RockyLinux/RHEL 8 detected. Enabling PowerTools..."
     dnf groupinstall -y "Development Tools"
     dnf install -y 'dnf-command(config-manager)'
     dnf config-manager --set-enabled powertools
 else
     # RockyLinux/RHEL 9, 10 and newer
-    echo "RockyLinux/RHEL 9+ detected. Enabling CRB and EPEL..."
+    echo "RockyLinux/RHEL 9+ detected. Enabling CRB..."
     dnf groupinstall -y "Development Tools"
     dnf install -y 'dnf-command(config-manager)'
     dnf config-manager --set-enabled crb
-    dnf install -y epel-release
-    
-    if [ "${USE_CHINA_MIRROR}" = "true" ]; then
-        echo "Configuring EPEL repository to use Aliyun mirrors..."
-        if ls /etc/yum.repos.d/epel*.repo 1>/dev/null 2>&1; then
-            sed -e 's|^metalink=|#metalink=|g' \
-                -e 's|^#baseurl=https://download.fedoraproject.org/pub/epel|baseurl=https://mirrors.aliyun.com/epel|g' \
-                -e 's|^#baseurl=http://download.fedoraproject.org/pub/epel|baseurl=https://mirrors.aliyun.com/epel|g' \
-                -e 's|^#baseurl=https://download.example/pub/epel|baseurl=https://mirrors.aliyun.com/epel|g' \
-                -i /etc/yum.repos.d/epel*.repo
-        fi
+fi
+
+# PostGIS development packages are provided by EPEL on Rocky Linux 8 and 9+.
+dnf install -y epel-release
+
+if [ "${USE_CHINA_MIRROR}" = "true" ]; then
+    echo "Configuring EPEL repository to use Aliyun mirrors..."
+    if ls /etc/yum.repos.d/epel*.repo 1>/dev/null 2>&1; then
+        sed -e 's|^metalink=|#metalink=|g' \
+            -e 's|^#baseurl=https://download.fedoraproject.org/pub/epel|baseurl=https://mirrors.aliyun.com/epel|g' \
+            -e 's|^#baseurl=http://download.fedoraproject.org/pub/epel|baseurl=https://mirrors.aliyun.com/epel|g' \
+            -e 's|^#baseurl=https://download.example/pub/epel|baseurl=https://mirrors.aliyun.com/epel|g' \
+            -i /etc/yum.repos.d/epel*.repo
     fi
 fi
 
